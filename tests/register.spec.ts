@@ -29,6 +29,26 @@ function registeredDefinition(): Record<string, unknown> {
   return register.mock.calls[0]?.[0] as Record<string, unknown>;
 }
 
+/** 一份形状完整的 canonical 输出值。 */
+function makeValue(overrides: Record<string, unknown> = {}) {
+  return {
+    path: '/tmp/pv.mp4',
+    bpm: 120,
+    beatCount: 25,
+    audioDuration: 12,
+    style: 'noir',
+    mood: 'emotional',
+    intensity: 0.65,
+    seed: 42,
+    aspect: '16:9',
+    resolution: 1080,
+    fps: 24,
+    bytes: 20_423_484,
+    dynamicsApplied: true,
+    ...overrides,
+  };
+}
+
 describe('dsh-tool-jizura 注册契约', () => {
   beforeEach(() => {
     register.mockClear();
@@ -54,29 +74,51 @@ describe('dsh-tool-jizura 注册契约', () => {
     expect(definition['name']).toBe('generate_jizura_pv');
     expect(definition['description']).toContain('JIZURA');
     expect(definition['description']).toContain('歌词');
+    expect(definition['description']).toContain('BPM');
     expect(definition['description']).toContain('网络访问');
   });
 
-  it('timeoutMs 为 120000', () => {
+  it('timeoutMs 覆盖浏览器启动 + 音频分析 + 视频编码', () => {
     plugin.apply(makeContext());
-    expect(registeredDefinition()['timeoutMs']).toBe(120000);
+    expect(registeredDefinition()['timeoutMs']).toBe(300000);
   });
 
-  it('parameters 声明的属性与必填标记正确', () => {
+  it('parameters 声明的属性完整', () => {
     plugin.apply(makeContext());
     const parameters = registeredDefinition()['parameters'] as Record<string, Record<string, unknown>>;
 
     expect(Object.keys(parameters).sort()).toEqual(
-      ['aspectRatio', 'audioPath', 'lyrics', 'outputDir', 'outputFormat', 'stylePreset'].sort(),
+      [
+        'aspectRatio',
+        'artist',
+        'audioPath',
+        'autoDynamics',
+        'fps',
+        'intensity',
+        'keyBg',
+        'lyrics',
+        'mood',
+        'outputDir',
+        'outputFormat',
+        'resolution',
+        'seed',
+        'stylePreset',
+        'theme',
+        'title',
+      ].sort(),
     );
+  });
+
+  it('只有 lyrics 是必填', () => {
+    plugin.apply(makeContext());
+    const parameters = registeredDefinition()['parameters'] as Record<string, Record<string, unknown>>;
 
     expect(parameters['lyrics']).toMatchObject({ type: 'string', required: true });
-    expect(parameters['audioPath']).toMatchObject({ type: 'string' });
-    expect(parameters['outputDir']).toMatchObject({ type: 'string' });
 
-    // 可选参数不应带 required 标记。
-    expect(parameters['audioPath']?.['required']).toBeUndefined();
-    expect(parameters['stylePreset']?.['required']).toBeUndefined();
+    for (const key of Object.keys(parameters)) {
+      if (key === 'lyrics') continue;
+      expect(parameters[key]?.['required']).toBeUndefined();
+    }
   });
 
   it('枚举参数取值与默认值符合契约', () => {
@@ -88,39 +130,115 @@ describe('dsh-tool-jizura 注册契约', () => {
       enum: ['auto', 'light', 'dark', 'neon'],
       default: 'auto',
     });
+    expect(parameters['mood']).toMatchObject({
+      type: 'string',
+      enum: ['glitch', 'calm', 'pop', 'graphic', 'editorial', 'emotional', 'horror', 'chaos'],
+    });
+    expect(parameters['theme']).toMatchObject({
+      type: 'string',
+      enum: ['lyricpv', 'kinetic', 'wa', 'horror', 'pop', 'ballad'],
+    });
     expect(parameters['aspectRatio']).toMatchObject({
       type: 'string',
       enum: ['16:9', '9:16', '1:1'],
       default: '16:9',
     });
+    expect(parameters['resolution']).toMatchObject({ type: 'integer', enum: [720, 1080, 1440, 2160], default: 1080 });
+    expect(parameters['fps']).toMatchObject({ type: 'integer', enum: [24, 30, 60], default: 24 });
     expect(parameters['outputFormat']).toMatchObject({
       type: 'string',
       enum: ['mp4', 'png_sequence'],
       default: 'mp4',
     });
+    expect(parameters['keyBg']).toMatchObject({ type: 'string', enum: ['off', 'green', 'black'], default: 'off' });
+    expect(parameters['autoDynamics']).toMatchObject({ type: 'boolean', default: true });
+    expect(parameters['intensity']).toMatchObject({ type: 'number' });
+    expect(parameters['seed']).toMatchObject({ type: 'integer' });
   });
 
-  it('output.schema 是 string，render 返回 text block', () => {
+  it('output.schema 是带全字段的对象', () => {
+    plugin.apply(makeContext());
+    const output = registeredDefinition()['output'] as { schema: Record<string, unknown> };
+    const schema = output.schema;
+
+    expect(schema['type']).toBe('object');
+    expect(schema['additionalProperties']).toBe(false);
+
+    const properties = schema['properties'] as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual(
+      [
+        'aspect',
+        'audioDuration',
+        'bpm',
+        'beatCount',
+        'bytes',
+        'dynamicsApplied',
+        'fps',
+        'intensity',
+        'mood',
+        'path',
+        'resolution',
+        'seed',
+        'style',
+      ].sort(),
+    );
+
+    // 输出字段必须全部 required，否则 InferValue 会把它们推成可选。
+    for (const key of Object.keys(properties)) {
+      expect((properties[key] as Record<string, unknown>)['required']).toBe(true);
+    }
+  });
+
+  it('render 把结构化结果整理成可读文本', () => {
     plugin.apply(makeContext());
     const output = registeredDefinition()['output'] as {
-      schema: unknown;
-      render: (args: unknown, value: string) => unknown;
+      render: (args: unknown, value: unknown) => { type: string; text: string }[];
     };
 
-    expect(output.schema).toEqual({ type: 'string' });
+    const blocks = output.render({}, makeValue());
+    expect(blocks).toHaveLength(1);
+    const text = blocks[0]?.text ?? '';
 
-    expect(output.render({}, '/tmp/pv.mp4')).toEqual([
-      { type: 'text', text: 'PV 已生成: /tmp/pv.mp4' },
-    ]);
+    expect(text).toContain('PV 已生成: /tmp/pv.mp4');
+    expect(text).toContain('16:9');
+    expect(text).toContain('1080p');
+    expect(text).toContain('BPM 120');
+    expect(text).toContain('25 拍');
+    expect(text).toContain('noir');
+    expect(text).toContain('emotional');
+    expect(text).toContain('强度 0.65');
+    expect(text).toContain('19.5 MB');
+    expect(text).toContain('段落对比');
+  });
+
+  it('render 在没有音频时说明本次没有踩点', () => {
+    plugin.apply(makeContext());
+    const output = registeredDefinition()['output'] as {
+      render: (args: unknown, value: unknown) => { type: string; text: string }[];
+    };
+
+    const text = output.render({}, makeValue({ bpm: 0, beatCount: 0, audioDuration: 0 }))[0]?.text ?? '';
+    expect(text).toContain('未提供音频');
+    expect(text).not.toContain('BPM');
+  });
+
+  it('render 在强度交给随机时不显示强度', () => {
+    plugin.apply(makeContext());
+    const output = registeredDefinition()['output'] as {
+      render: (args: unknown, value: unknown) => { type: string; text: string }[];
+    };
+
+    const text = output.render({}, makeValue({ intensity: -1 }))[0]?.text ?? '';
+    expect(text).not.toContain('强度');
   });
 
   it('歌词为空时 render 给出提示而不是声称已生成', () => {
     plugin.apply(makeContext());
     const output = registeredDefinition()['output'] as {
-      render: (args: unknown, value: string) => { type: string; text: string }[];
+      render: (args: unknown, value: unknown) => { type: string; text: string }[];
     };
 
-    const blocks = output.render({}, '');
+    const blocks = output.render({}, makeValue({ path: '' }));
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.text).toContain('未生成');
     expect(blocks[0]?.text).not.toContain('PV 已生成');

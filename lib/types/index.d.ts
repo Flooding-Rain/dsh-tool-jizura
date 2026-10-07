@@ -15,8 +15,6 @@ export declare const inject: string[];
 export declare const TOOL_NAME = "generate_jizura_pv";
 /** 面向模型的工具描述。 */
 export declare const TOOL_DESCRIPTION: string;
-/** 歌词为空时返回的 canonical 值。 */
-export declare const EMPTY_RESULT = "";
 /**
  * 注册 `generate_jizura_pv` 工具。
  *

@@ -1,24 +1,25 @@
 # dsh-tool-jizura
 
-> 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 用的工具插件：把一段歌词交给
+> 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 用的工具插件：把一段歌词（可附音乐）交给
 > [JIZURA](https://852wa.github.io/JIZURA/) 在线应用，自动产出**文字 PV**（MP4 视频或連番 PNG）。
 
 ![插件驱动 JIZURA 生成文字 PV](docs/demo.png)
 
-上图是插件实际驱动 JIZURA 之后的界面：左侧歌词由 `generate_jizura_pv` 填入，并被解析为
-「4 行 / 8 カット」；右侧「おまかせ」已生效（スタイル：クリムゾン・シグナル）；
-中间是实时预览。该图由无头 Chromium 跑真实流程截取。
+上图是插件实际驱动 JIZURA 之后的界面（无头 Chromium 跑真实流程截取）：
+曲名 / 艺术家已填入；音频显示为 `test-beat-120.wav (00:12.00 ・ 約120BPM)`——**BPM 是 JIZURA 检测出来的**；
+各行起始时间 0.48 / 2.99 / 4.89 / 7.85 全部咬在 0.5 秒的拍网格上，即**踩点生效**；
+右侧「いまの案」显示 スタイル＝ノワール・クロマ、雰囲気＝エモーショナル，
+正是 `stylePreset: "dark"` 展开成的样子；構成为 10 カット / レイアウト 9 種。
 
 ## 功能
 
-注册一个工具 `generate_jizura_pv`。模型只要拿到歌词文本，就能驱动 JIZURA 完成
-「填歌词 → 载入背景音乐 → 设定画幅与风格 → 点『おまかせで作る』→ 导出 → 落盘」的整条链路，
-最后返回产物文件的**绝对路径**。
-
-- 无头 Chromium 驱动，无需用户手工点页面。
-- 支持背景音乐、画幅比例、视觉风格预设、MP4 / PNG 序列两种输出。
+- **自动踩点**：提供背景音乐后，插件会**等待 JIZURA 完成异步 BPM 检测**，让画面切点咬在节拍上，
+  并把检测到的 `bpm` / 拍数 / 音频时长回传，方便确认踩点真的生效（而不是以为生效）。
+- **情绪 + 强度**：可指定 8 种情绪（`J.MOODS`）与 0~1 的强度，强度会在该情绪自带的区间内线性插值，
+  直接驱动 JIZURA 的 13 个效果强度参数（motion / glitch / chroma / texture / density …）。
+- **自动段落对比**：按音乐能量包络自动判定每一行的响度，让安静的段落收敛、激烈的段落切得更碎。
+- **主题 / 曲名 / 画幅 / 分辨率 / 帧率 / 绿幕背景 / 随机种子**，以及可复现的确定性输出。
 - 遵守 DSH 的取消信号：调用被中止时立即关闭浏览器进程。
-- 使用方无需额外 API Key，但**需要网络访问**（JIZURA 是纯前端在线应用，歌词不上传服务器）。
 
 ## 安装
 
@@ -26,11 +27,9 @@
 dsh plugin --profile web add github:Flooding-Rain/dsh-tool-jizura
 ```
 
-安装后 `generate_jizura_pv` 会出现在 web profile 的工具列表里。
-
 ### 前置依赖
 
-插件本体依赖 Node.js 侧的 Playwright，**首次使用前请确保浏览器已就绪**：
+插件依赖 Node.js 侧的 Playwright，**首次使用前请确保浏览器已就绪**：
 
 ```bash
 npx playwright install chromium
@@ -38,164 +37,212 @@ npx playwright install chromium
 
 ## 使用示例
 
-模型侧最简调用：
+只要歌词：
 
 ```jsonc
-{
-  "lyrics": "夜明けの色を/覚えてる\n*透明*なままの街\n[間奏 8]\n君の名前を呼んだ"
-}
+{ "lyrics": "夜明けの色を/覚えてる\n*透明*なままの街" }
 ```
 
-带音乐、竖屏、霓虹风格的调用：
+带音乐、定向情绪、竖屏：
 
 ```jsonc
 {
-  "lyrics": "夜明けの色を/覚えてる\n遠くへ消えた",
+  "lyrics": "夜明けの色を/覚えてる\n*透明*なままの街\n君の名前を呼んだ",
   "audioPath": "D:\\music\\song.mp3",
-  "stylePreset": "neon",
+  "mood": "emotional",
+  "theme": "ballad",
+  "intensity": 0.7,
   "aspectRatio": "9:16",
-  "outputFormat": "mp4",
-  "outputDir": "D:\\output\\pv"
+  "resolution": 1080,
+  "outputDir": "D:\\output\\pv",
+  "title": "夜明け",
+  "seed": 20261007
 }
 ```
 
 一次完整的手工验证（`dsh` 会话里）：
 
-> 用 generate_jizura_pv 把下面这段歌词做成 16:9 的 MP4，霓虹风格，输出到 D:\output\pv
+> 用 generate_jizura_pv 把下面这段歌词做成 16:9 的 MP4，情绪用 emotional，强度 0.7，
+> 配上 D:\music\song.mp3，输出到 D:\output\pv
 > ```
 > 夜明けの色を/覚えてる
 > *透明*なままの街
 > ```
 
-工具执行成功后返回产物路径，界面卡片会显示 `PV 已生成: <绝对路径>`。
-
 ## 参数
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `lyrics` | string | ✅ | — | 歌词文本，支持多行。JIZURA 的记法（`/` 切分、`*强调*`、`[間奏 8]`、LRC 时间戳）原样可用。 |
-| `audioPath` | string | | — | 背景音乐文件绝对路径（mp3 / wav / m4a / aac / ogg / flac）。省略则生成无声 PV。 |
-| `stylePreset` | string | | `auto` | `auto` \| `light` \| `dark` \| `neon` |
+| `lyrics` | string | ✅ | — | 歌词文本，支持多行。JIZURA 记法（`/` 切分、`*强调*`、`[間奏 8]`、LRC 时间戳）原样可用。 |
+| `audioPath` | string | | — | 背景音乐绝对路径。**提供后才会自动踩点。** |
+| `title` | string | | — | 曲名，显示在标题卡 / HUD；也会用作输出文件名。 |
+| `artist` | string | | — | 艺术家名。 |
+| `stylePreset` | string | | `auto` | `auto` \| `light` \| `dark` \| `neon`，展开为下面的 style + mood + intensity。 |
+| `mood` | string | | 随预设 | `glitch` \| `calm` \| `pop` \| `graphic` \| `editorial` \| `emotional` \| `horror` \| `chaos` |
+| `theme` | string | | — | `lyricpv` \| `kinetic` \| `wa` \| `horror` \| `pop` \| `ballad`，限定随机取材方向。 |
+| `intensity` | number | | 随预设 | `0`~`1`，在该情绪的强度区间内插值。 |
+| `autoDynamics` | boolean | | `true` | 按音乐能量自动做段落对比（仅有音频时有效）。 |
 | `aspectRatio` | string | | `16:9` | `16:9` \| `9:16` \| `1:1` |
+| `resolution` | integer | | `1080` | `720` \| `1080` \| `1440` \| `2160` |
+| `fps` | integer | | `24` | `24` \| `30` \| `60` |
 | `outputFormat` | string | | `mp4` | `mp4` \| `png_sequence` |
 | `outputDir` | string | | `./jizura-pv-output` | 输出目录绝对路径，不存在会自动创建。 |
+| `keyBg` | string | | `off` | `off` \| `green` \| `black`，合成用纯色背景。 |
+| `seed` | integer | | — | 随机种子。给定后同样的输入得到可复现的结果。 |
 
-### 返回值
+### 预设展开表
 
-返回产物文件的绝对路径字符串（`output.schema` 为 `{ "type": "string" }`）。
+| `stylePreset` | JIZURA 样式包 | 情绪 | 强度 |
+| --- | --- | --- | --- |
+| `light` | `paper`（ペーパー・インク，`#ECE9E3` 亮纸底） | `calm` | 0.35 |
+| `dark` | `noir`（ノワール・クロマ，`#060607` 黑底白字） | `emotional` | 0.65 |
+| `neon` | `magenta`（ポップ・マゼンタ，`#FF0A8C` 震撼粉） | `pop` | 0.85 |
+| `auto` | 不覆盖 | 不覆盖 | 不覆盖 |
 
-| 情况 | 返回 | 界面提示 |
-| --- | --- | --- |
-| 正常生成 | `D:\output\pv\jizura-xxxx.mp4` | `PV 已生成: <路径>` |
-| 歌词为空/纯空白 | `""` | `PV 未生成：歌词为空，请提供至少一行歌词。` |
-| 基础设施故障 | 抛异常 | 工具以错误卡片呈现 |
+`mood` / `intensity` 显式给出时会覆盖上表的推断值。
 
-### 关于 `outputFormat`
+## 返回值
+
+`execute` 返回一个结构化对象（而不是只返回路径），让模型能判断踩点等关键步骤是否真的生效：
+
+```jsonc
+{
+  "path": "D:\\output\\pv\\夜明け.mp4",
+  "bpm": 120,              // JIZURA 检测到的 BPM；0 表示没有音频
+  "beatCount": 25,         // 检测到的拍数
+  "audioDuration": 12,     // 音频时长（秒）
+  "style": "noir",         // 实际生效的样式
+  "mood": "emotional",     // 实际生效的情绪
+  "intensity": 0.7,        // 实际生效的强度；-1 表示由随机决定
+  "seed": 20261007,        // 复现键（回显调用方传入的 seed）
+  "aspect": "16:9",
+  "resolution": 1080,
+  "fps": 24,
+  "bytes": 7111804,        // 产物字节数
+  "dynamicsApplied": true  // 能量驱动的段落对比是否生效
+}
+```
+
+界面卡片上会显示成：
+
+```
+PV 已生成: D:\output\pv\夜明け.mp4
+  画面 16:9 / 1080p / 24fps · 6.8 MB
+  样式 noir · 情绪 emotional · 强度 0.70
+  踩点 BPM 120 · 25 拍 · 音频 12.0s
+  已按音乐能量做段落对比
+```
+
+### 非理想结果
+
+| 情况 | 行为 |
+| --- | --- |
+| 歌词为空 / 纯空白 | 不启动浏览器，返回各字段为零值（`path: ''`），卡片提示「PV 未生成：歌词为空」。 |
+| 没有 `audioPath` | 正常出片，但 `bpm: 0`、`dynamicsApplied: false`，卡片显示「未提供音频，本次没有踩点」。 |
+| 浏览器启动失败 / 导航超时 / 音频分析超时 / 找不到关键元素 | 抛异常，工具以错误卡片呈现。 |
+
+## 关于 `outputFormat`
 
 - `mp4`：点 JIZURA 的「MP4 を書き出す」，得到单个 `.mp4`。
-- `png_sequence`：点「連番PNG（ZIP）」。注意 JIZURA 原生只会打包成 **一个 ZIP**，
+- `png_sequence`：点「連番PNG（ZIP）」。注意 JIZURA 原生只会打包成**一个 ZIP**，
   因此产物是 `.zip` 而非一堆裸 PNG；需要逐帧图片时自行解压。
 
-### 关于 `stylePreset`
+## 实现原理：调 API，而不是点 UI
 
-JIZURA 没有名为 light/dark/neon 的预设。它把样式包定义在 `src/04_styles.js`
-的 `J.STYLES` / `J.STYLE_ORDER`（基础 12 个，运行时另挂 15 个扩展包），
-再在 `#styleGrid` 里渲染成可点击的卡片（卡片的 `data-k` 就是样式 key）。
-本插件挑选语义最接近的：
+这是本插件与"用 Playwright 点按钮"最本质的区别。JIZURA 把内部状态与算法都挂在 `window.J` 上，
+`src/12_ui.js` 结尾处还专门为嵌入式宿主导出了 `J.uiApi`：
 
-| 预设 | JIZURA 样式包 | 特征 |
-| --- | --- | --- |
-| `light` | `paper`（ペーパー・インク） | `#ECE9E3` 亮纸底、明朝体 |
-| `dark` | `noir`（ノワール・クロマ） | `#060607` 黑底白字、青/琥珀色差 |
-| `neon` | `magenta`（ポップ・マゼンタ） | `#FF0A8C` 震撼粉 |
-| `auto` | 不干预 | 完全交给「おまかせ」随机 |
+```js
+J.ui = S;                    // 完整状态对象，S.project 即全部设置
+J.uiApi = { toast, replan, syncUI, pause, seek, flushSave, loadAudioFile, restartPreview, exportRange, exportRangeLines };
+```
 
-## 权限与注意事项
+插件用到的接口：
 
-- **网络访问**：需要连到 `https://852wa.github.io/JIZURA/`。
-- **浏览器进程**：会拉起一个无头 Chromium，执行期间占用数百 MB 内存。
-- **耗时**：JIZURA 在浏览器内用 mp4-muxer 逐帧编码，1080p 以上很容易超过 60 秒，
-  因此工具 `timeoutMs` 设为 120000（2 分钟）。
-- **隐私**：JIZURA 是纯前端应用，歌词与音频只在本地浏览器内处理，不会上传到任何服务器。
-- **产物版权**：JIZURA 明确说明「用本工具做出来的视频/图片，权利归制作者」，
-  但**所用的歌词与乐曲权利仍归各自权利人**。
+| 接口 | 用途 |
+| --- | --- |
+| `J.ui.project` | 31 个可读写字段：`style` `mood` `seed` `aspect` `res` `fps` `title` `artist` `keyBg` `themeId` `fx` `timing` `overrides` `enabled` … |
+| `J.uiApi.replan()` / `syncUI()` | 改完状态后重排并同步界面 |
+| `J.omakase(project, rnd, themeId)` | 「おまかせ」本体；传入自定义 `rnd` 即可用 `seed` 复现 |
+| `J.MOODS[mood].fx` | 每种情绪的效果强度**区间**，用于把 `intensity` 插值成 13 个参数 |
+| `J.THEMES` | 主题 → 情绪池的映射 |
+| `J.analyzeAudio(file)` | 异步解码 + 能量包络 + onset + 自相关求 BPM 与相位 |
+| `J.rng(seed)` | mulberry32 随机流，供可复现的 `omakase` 使用 |
 
-## JIZURA 界面选择器维护说明
+只有三件事必须走 DOM：**填歌词**（走真实输入路径，让 JIZURA 自己的处理器刷新行列表）、
+**塞音频文件**（文件不适合经 `evaluate` 传递）、**点导出按钮**（导出是 UI 驱动的下载）。
 
-JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更，本插件的选择器就会失效。
-所有选择器集中在 **`src/impl.ts` 的 `SELECTORS` 常量**里，按「优先精确 id，其次通用特征」排序，
-探测时逐个尝试并命中第一个可用项。
+## JIZURA 界面/接口维护说明
 
-### 当前依赖的选择器
+上游一旦改动，插件需要跟着改。所有 DOM 依赖集中在 **`src/impl.ts` 的 `SELECTORS`**，
+所有内部 API 依赖集中在 **`configureProject()` / `applyDynamics()` 两个 `page.evaluate`** 里。
+
+### 当前依赖的 DOM 选择器
 
 | 用途 | 候选选择器（按优先级） | 来源 |
 | --- | --- | --- |
-| 新手引导浮层 | `#tour` | `<div id="tour" role="dialog" aria-modal="true">` |
+| 引导浮层（兜底） | `#tour` | `<div id="tour" role="dialog" aria-modal="true">` |
 | 引导层「スキップ」 | `#tour .tour-skip` → `.tour-skip` | 引导层导航里的跳过按钮 |
 | 歌词输入 | `#lyrics` → `textarea` → `[contenteditable="true"]` → `[aria-label*="歌詞"]` → `[aria-label*="歌词"]` | `<textarea id="lyrics">` |
 | 音频文件 | `#audioFile` → `input[type="file"][accept*="audio"]` | `<input id="audioFile" type="file">` |
-| 切「かんたん」模式 | `#modeEasy` | `<button id="modeEasy">かんたん</button>` |
-| かんたん面板 | `#easyPanel` | `<div id="easyPanel" class="easy" hidden>` |
-| 「おまかせで作る」 | `#btnOmakaseBig` → `#btnOmakase` → `#btnOmakaseTop` | `<button id="btnOmakaseBig" class="omakase">` |
-| 画幅比例 | `#eAspect` → `#outAspect` | `<select id="eAspect">` |
-| スタイル标签页 | `button[role="tab"][data-tab="style"]` | `<nav class="tabs">` |
-| 样式卡片 | `#styleGrid button[data-k="<styleKey>"]` | `src/12_ui.js` 的 `drawStyleGrid()` |
 | MP4 导出 | `#eMP4` → `#btnMP4` | `<button id="eMP4">MP4 を書き出す</button>` |
 | PNG 序列导出 | `#ePNG` → `#btnPNG` | `<button id="ePNG">連番PNG（ZIP）</button>` |
 | 「書き出し」标签页 | `button[role="tab"][data-tab="out"]` | 詳細模式的兜底路径 |
 
-> 上表已于 2026-10-07 用 Playwright 1.63 + Chrome Headless Shell 153 对真实页面
-> <https://852wa.github.io/JIZURA/> 逐项探测确认：**所有首选选择器均命中且可见**。
-> 下面第 1 个坑正是这次探测发现的——它推翻了仅凭 `body.html` 得出的结论。
-
-### 三个必须知道的坑
+### 四个必须知道的坑
 
 1. **静态模板与实际运行时状态相反。**
    `app/body.html` 里 `#easyPanel` 带 `hidden`、`#modePro` 带 `aria-pressed="true"`，
    看起来默认是「詳細」模式；但实测页面加载完成后 JS 会把默认模式设为**「かんたん」**
-   （`#modeEasy[aria-pressed="true"]`、`#easyPanel` 不含 `hidden`、`#btnOmakaseBig` 可见），
+   （`#modeEasy[aria-pressed="true"]`、`#easyPanel` 不含 `hidden`），
    此时 `#outAspect` / `#btnMP4` / `#btnPNG` 与各标签页反而是隐藏的。
-   因此 `clickOmakase()` 先直接找可见的 `#btnOmakaseBig`；只有找不到时才点 `#modeEasy`
-   切模式并等面板出现，最后才回退到詳細模式的 `#btnOmakase` / `#btnOmakaseTop`。
    **不要照抄 `body.html` 推断初始可见性。**
+   本插件因此优先用 `#eMP4` / `#ePNG`，只在找不到时才回退到詳細模式 + 切标签页。
 
-2. **风格预设必须在「おまかせ」之后应用。**
-   `おまかせ` 会重掷 `style`、`mood`、配色与构成（见 `src/08b_omakase.js`）。
-   若先选样式再点おまかせ，样式会被随机覆盖。因此 `generateJizuraPv()` 的顺序是
-   「填歌词 → 载音频 → 设画幅 → **点おまかせ** → **应用 stylePreset** → 导出」。
-   画幅比例（`#eAspect`）属于输出设置，不受おまかせ影响，所以可以先设。
+2. **首次访问有全屏引导浮层，会吞掉所有点击。**
+   `#tour` 是 `role="dialog" aria-modal="true"` 的遮罩，每次新建浏览器上下文都算首次访问，
+   所以**每次调用都会遇到**。不处理它，第一次点击就会失败并报 `... intercepts pointer events`。
+   本插件用 `context.addInitScript()` 在页面脚本执行前写入 `localStorage['jizura.tourDone'] = '1'`
+   （`12_ui.js` 启动段据此判断），**从源头规避**；点「スキップ」与 `addStyleTag` 只作为兜底。
 
-3. **每次调用都会撞上全屏新手引导浮层，它会吞掉所有点击。**
-   `#tour` 是 `role="dialog" aria-modal="true"` 的遮罩。每次新建浏览器上下文都算
-   「首次访问」，所以**每次调用都会出现**。不处理它，第一次点击就会失败并报
-   `... intercepts pointer events`。这个坑单元测试发现不了，是靠真实端到端跑出来的。
-   因此 `generateJizuraPv()` 在导航完成后立刻调用 `dismissTour()`：优先点
-   `#tour .tour-skip`，点不到则用 `page.addStyleTag()` 把 `#tour` 置为 `display:none` 兜底。
+3. **风格必须在「おまかせ」之后应用。**
+   `おまかせ` 会重掷 `style`、`mood`、`fx`、`enabled`（见 `src/08b_omakase.js`）。
+   若先设样式再 `omakase`，样式会被随机覆盖。因此 `configureProject()` 的顺序恒为
+   「输出设置 → `omakase` 打底 → 显式 style/mood 覆盖 → intensity 插值 → replan」。
+   画幅 / 分辨率 / 帧率属于输出设置，不受 `おまかせ` 影响，可以先设。
 
-### 页面结构变更后的修法
+4. **`overrides[line].cutQuiet` 是死数据，不要用它做按行控制。**
+   它看起来正是「让这一行安静下来」的开关，但全仓库只有 `12_ui.js` 读它来渲染一个 `forced`
+   标记，**`08_planner.js` 与渲染流程从不读取**，写进去不会有任何效果。
+   真正生效的按行控制是 `overrides[line].cuts`（`08_planner.js` 里 `const fixedN = ov.cuts > 0 ? …`）
+   与 `overrides[line].single` / `seed` / `lock`。段落对比因此基于 `cuts` 实现。
 
-1. 打开 <https://852wa.github.io/JIZURA/>，用开发者工具确认新元素。
-2. 更新 `src/impl.ts` 的 `SELECTORS`（尽量追加候选而非替换，保留兜底）。
-3. 若是样式包改名，同步更新 `STYLE_PRESET_TO_KEY`。实测 `#styleGrid` 会渲染 **27** 张卡片：
-   `J.STYLE_ORDER` 声明的基础 12 个
-   （`noir` `crimson` `caution` `magenta` `paper` `hud` `mint` `specimen` `transit` `blueprint` `rouge` `mono`），
-   加上追加分 / 恐怖 / 和风的 15 个
-   （`hrRuin` `hrNightRec` `hrCurse` `sakura` `ocean` `sunset` `forest` `vapor` `newsprint` `synth80` `kraft` `candy` `acid` `sumi` `gold`）。
-   本插件的三个预设都落在基础 12 个内，因此不受「追加分」开关影响。
-4. 跑 `npm test`（测试里的假 DOM 是手写的，不受真实页面影响，仍应全绿）。
-5. 用真实页面做一次端到端验证（见下）。
+### 页面/接口变更后的修法
+
+1. 打开 <https://852wa.github.io/JIZURA/>，用开发者工具确认新元素或新 API。
+2. **DOM 变了** → 更新 `SELECTORS`（尽量追加候选而非替换，保留兜底）。
+3. **API 变了** → 改 `configureProject()` / `applyDynamics()`，注意 `J.ui.project` 的字段名。
+4. 若是样式包改名，同步更新 `STYLE_PRESETS`。当前 `#styleGrid` 渲染 **27** 张卡片：
+   基础 12 个（`noir` `crimson` `caution` `magenta` `paper` `hud` `mint` `specimen` `transit` `blueprint` `rouge` `mono`）
+   加扩展 15 个（`hrRuin` `hrNightRec` `hrCurse` `sakura` `ocean` `sunset` `forest` `vapor` `newsprint` `synth80` `kraft` `candy` `acid` `sumi` `gold`）。
+   本插件用到的三个都在基础 12 个内，不受「追加分」开关影响。
+5. 跑 `npm test`（用例里的假 DOM 是手写的，不受真实页面影响，仍应全绿）。
+6. 用真实页面做一次端到端验证（见下）。
 
 ### 端到端自检
 
 ```bash
 node --input-type=module -e "
 import { generateJizuraPv } from './lib/impl.js';
-const p = await generateJizuraPv({
+const r = await generateJizuraPv({
   lyrics: '夜明けの色を/覚えてる\n*透明*なままの街',
-  stylePreset: 'dark', aspectRatio: '16:9', outputFormat: 'mp4',
-  outputDir: './tmp-verify',
+  audioPath: 'D:/path/to/song.mp3',
+  stylePreset: 'dark', mood: 'emotional', intensity: 0.7, autoDynamics: true,
+  aspectRatio: '16:9', resolution: 720, fps: 24, outputFormat: 'mp4',
+  outputDir: './tmp-verify', keyBg: 'off', seed: 20261007,
 });
-console.log('OK:', p);
+console.log(r);
+if (r.bpm === 0 && r.audioDuration === 0) throw new Error('踩点没有生效，检查音频格式');
 "
 ```
 
@@ -219,15 +266,15 @@ lib/types/impl.d.ts
 测试分两层：
 
 - `tests/register.spec.ts` —— 屏蔽 `@deepseek-ai/dsh-tools`，断言 `name`、`inject`
-  与工具定义形状（参数、枚举、`output.schema`、`render`、`timeoutMs`）符合 dsh 契约。
-- `tests/impl.spec.ts` —— 屏蔽 `playwright`，用假 DOM 覆盖主链路、新手引导浮层关闭、
-  样式应用顺序、导出按钮选择、取消信号清理、空歌词短路、导航失败清理，以及路径辅助函数。
+  与工具定义形状（16 个参数、枚举、`output.schema` 的 13 个全 required 字段、`render`
+  的四种分支、`timeoutMs`）符合 dsh 契约。
+- `tests/impl.spec.ts` —— 屏蔽 `playwright`，用假 DOM 覆盖：引导浮层的 `addInitScript` 注入、
+  等待音频异步分析、预设展开为 style+mood+intensity、显式参数覆盖、段落对比的开关、
+  结构化返回、取消信号清理、空歌词短路、音频超时、导航失败，以及路径辅助函数。
 
-当前 `npm test` 共 **20** 个用例（注册契约 9 + 逻辑 11）全部通过。
+## 实测记录
 
-### 实测记录
-
-在 Windows + Chrome Headless Shell 153 上跑通了一次完整链路：
+**（一）无音频基线** —— Windows + Chrome Headless Shell 153：
 
 ```
 SUCCESS (94.1s)
@@ -235,16 +282,24 @@ SUCCESS (94.1s)
   size: 20423484 bytes      # ftyp isom / isomavc1mp41（H.264）
 ```
 
-即「填歌词 → 点おまかせ → 应用 dark 预设 → 导出 MP4 → 落盘」全程无人工干预，
-耗时约 94 秒，印证了 `timeoutMs: 120000` 的取值。
+**（二）带音频 + 情绪/强度/段落对比** —— 用合成的 120 BPM 音频（12 秒）：
 
-## 实现说明
+```
+SUCCESS (28.7s)
+{
+  "bpm": 120,               // 合成源是 120 BPM，检测完全准确
+  "beatCount": 25,
+  "audioDuration": 12,
+  "style": "noir",          // stylePreset: dark → noir
+  "mood": "emotional",
+  "intensity": 0.7,
+  "aspect": "16:9", "resolution": 720, "fps": 24,
+  "bytes": 7111804,
+  "dynamicsApplied": true
+}
+```
 
-- 插件只注册 `tools` 服务（`inject = ['tools']`），通过 `ctx.tools.register(defineTool({...}))` 注册。
-- `execute` 只返回**一个 canonical 值**（文件路径字符串）；业务非理想结果（歌词为空）
-  以空串表达，并在 `output.render` 里提示，不抛异常。
-- 基础设施故障（浏览器启动失败、导航超时、找不到关键元素）直接抛出。
-- 无论成功或失败，`finally` 都会关闭 context 与 browser；取消信号触发时另有关闭处理器立即介入。
+即「载入音频 → 等 BPM 检测 → 注入样式/情绪/强度 → 按能量做段落对比 → 导出」全程无人工干预。
 
 ## 致谢与许可
 

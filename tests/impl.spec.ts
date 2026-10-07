@@ -1,8 +1,9 @@
 /**
  * 逻辑测试。
  *
- * 用 `vi.mock('playwright')` 替换整个浏览器层，因此不需要真实 Chromium：
- * 既验证「生成 → 落盘 → 返回存在路径」的主链路，也验证取消信号下的进程清理。
+ * 用 `vi.mock('playwright')` 替换整个浏览器层，因此不需要真实 Chromium。
+ * 覆盖：引导浮层根治、音频异步分析等待、风格/情绪/强度注入、能量驱动的段落对比、
+ * 结构化返回、取消信号清理、空歌词短路、导航失败与音频超时。
  */
 
 import { existsSync } from 'node:fs';
@@ -12,7 +13,14 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { generateJizuraPv, resolveOutputDir, uniquePath } from '../src/impl.js';
+import {
+  applyDynamics,
+  configureProject,
+  emptyResult,
+  generateJizuraPv,
+  resolveOutputDir,
+  uniquePath,
+} from '../src/impl.js';
 
 /** Playwright 替身共享的状态；`vi.hoisted` 保证在 `vi.mock` 工厂之前完成初始化。 */
 const m = vi.hoisted(() => ({
@@ -20,18 +28,30 @@ const m = vi.hoisted(() => ({
   goto: vi.fn(),
   fill: vi.fn(),
   setInputFiles: vi.fn(),
-  selectOption: vi.fn(),
-  click: vi.fn(),
   setDefaultTimeout: vi.fn(),
+  waitForFunction: vi.fn(),
   waitForEvent: vi.fn(),
+  evaluate: vi.fn(),
+  addStyleTag: vi.fn(),
+  addInitScript: vi.fn(),
   browserClose: vi.fn(),
   contextClose: vi.fn(),
   /** 选择器 → 是否存在。 */
   present: new Set<string>(),
   /** 选择器 → 是否可见。 */
   visible: new Set<string>(),
+  /** 传给 `page.evaluate` 的第二参数，按调用顺序。 */
+  evaluateArgs: [] as unknown[],
   /** 被点击过的选择器，按顺序。 */
   clicked: [] as string[],
+  /** 音频分析的假结果。 */
+  audioInfo: { bpm: 120, beatCount: 25, audioDuration: 12 },
+  /** 配置注入的假结果。 */
+  configureResult: { style: 'noir', mood: 'emotional', seed: 42 },
+  /** 段落对比的假结果。 */
+  dynamicsResult: { lines: 4, loud: 3, quiet: 1 },
+  /** 是否让音频分析超时。 */
+  audioAnalysisFails: false,
 }));
 
 vi.mock('playwright', () => ({
@@ -49,34 +69,30 @@ function locatorFor(selector: string) {
     },
     click: async () => {
       m.clicked.push(selector);
-      m.click(selector);
     },
-    selectOption: async (value: string) => {
-      m.selectOption(value);
-    },
-    // 与真实 Playwright 一致：元素不存在时等待会超时失败。
     waitFor: async () => {
-      if (!m.present.has(selector)) {
-        throw new Error(`Timeout waiting for ${selector}`);
-      }
+      // 与真实 Playwright 一致：元素不存在时等待会超时失败。
+      if (!m.present.has(selector)) throw new Error(`Timeout waiting for ${selector}`);
       return undefined;
     },
   };
 }
 
-/** 当前测试使用的 page / context / browser 替身。 */
 const page = {
   setDefaultTimeout: m.setDefaultTimeout,
   goto: m.goto,
   locator: (selector: string) => locatorFor(selector),
   setInputFiles: m.setInputFiles,
+  waitForFunction: m.waitForFunction,
   waitForEvent: m.waitForEvent,
-  addStyleTag: async () => undefined,
+  evaluate: m.evaluate,
+  addStyleTag: m.addStyleTag,
 };
 
 const context = {
   close: m.contextClose,
   newPage: async () => page,
+  addInitScript: m.addInitScript,
 };
 
 const browser = {
@@ -86,16 +102,7 @@ const browser = {
 
 /** 让页面像真实 JIZURA 那样拥有主流程需要的元素。 */
 function seedDefaultDom(): void {
-  for (const selector of [
-    '#lyrics',
-    '#audioFile',
-    '#eAspect',
-    '#modeEasy',
-    '#easyPanel',
-    '#btnOmakaseBig',
-    '#eMP4',
-    '#ePNG',
-  ]) {
+  for (const selector of ['#lyrics', '#audioFile', '#eMP4', '#ePNG']) {
     m.present.add(selector);
     m.visible.add(selector);
   }
@@ -110,10 +117,27 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
-/** 等待一个微任务轮次之外的推进，让被测代码走到下一步。 */
-const flush = () => new Promise((r) => {
-  setTimeout(r, 0);
-});
+/** 取出传给 evaluate 的那个配置对象。 */
+function configureArg(): Record<string, unknown> | undefined {
+  return m.evaluateArgs.find(
+    (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'aspect' in a,
+  );
+}
+
+/** 一个最小可用的请求。 */
+function makeRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    lyrics: '夜明けの色を/覚えてる\n*透明*なままの街',
+    stylePreset: 'auto' as const,
+    autoDynamics: true,
+    aspectRatio: '16:9' as const,
+    resolution: 1080 as const,
+    fps: 24 as const,
+    outputFormat: 'mp4' as const,
+    keyBg: 'off' as const,
+    ...overrides,
+  };
+}
 
 describe('generate_jizura_pv 实现', () => {
   beforeEach(() => {
@@ -121,12 +145,35 @@ describe('generate_jizura_pv 实现', () => {
     m.present.clear();
     m.visible.clear();
     m.clicked.length = 0;
+    m.evaluateArgs.length = 0;
+    m.audioAnalysisFails = false;
     seedDefaultDom();
 
     m.launch.mockResolvedValue(browser);
     m.goto.mockResolvedValue(null);
     m.browserClose.mockResolvedValue(undefined);
     m.contextClose.mockResolvedValue(undefined);
+    m.addInitScript.mockResolvedValue(undefined);
+    m.addStyleTag.mockResolvedValue(undefined);
+
+    // 等待逻辑按传入函数的特征分流，而不是依赖调用次数。
+    m.waitForFunction.mockImplementation(async (fn: unknown) => {
+      const src = typeof fn === 'function' ? fn.toString() : '';
+      if (src.includes('J.ui.audio') && m.audioAnalysisFails) {
+        throw new Error('Timeout waiting for audio');
+      }
+      return undefined;
+    });
+
+    // evaluate 同样按函数特征分流。
+    m.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) => {
+      m.evaluateArgs.push(arg);
+      const src = typeof fn === 'function' ? fn.toString() : '';
+      if (src.includes('a.bpm')) return m.audioInfo;
+      if (src.includes('cfg.aspect')) return m.configureResult;
+      if (src.includes('quietRatio')) return m.dynamicsResult;
+      return {};
+    });
   });
 
   afterEach(async () => {
@@ -136,10 +183,26 @@ describe('generate_jizura_pv 实现', () => {
     }
   });
 
-  it('生成 PV 后返回一个真实存在的文件路径', async () => {
+  it('从源头注入 localStorage 来规避新手引导浮层', async () => {
     const outputDir = await makeTempDir();
-    const lyrics = '夜明けの色を/覚えてる\n*透明*';
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'pv.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'fake-mp4-bytes');
+      },
+    });
 
+    await generateJizuraPv(makeRequest({ outputDir }));
+
+    // addInitScript 必须在下发页面脚本前注册，且写入的是 tourDone 标记。
+    expect(m.addInitScript).toHaveBeenCalledTimes(1);
+    const script = m.addInitScript.mock.calls[0]?.[0];
+    expect(typeof script).toBe('function');
+    expect(String(script)).toContain('jizura.tourDone');
+  });
+
+  it('生成 PV 后返回结构化结果，且路径指向真实存在的文件', async () => {
+    const outputDir = await makeTempDir();
     m.waitForEvent.mockResolvedValue({
       suggestedFilename: () => 'jizura-pv.mp4',
       saveAs: async (target: string) => {
@@ -147,110 +210,197 @@ describe('generate_jizura_pv 实现', () => {
       },
     });
 
-    const result = await generateJizuraPv({
-      lyrics,
-      stylePreset: 'auto',
-      aspectRatio: '16:9',
-      outputFormat: 'mp4',
-      outputDir,
-    });
+    const result = await generateJizuraPv(
+      makeRequest({ outputDir, audioPath: join(outputDir, 'song.mp3') }),
+    );
 
-    // 返回的是绝对路径，且文件确实落盘了。
-    expect(result).toBe(join(outputDir, 'jizura-pv.mp4'));
-    expect(existsSync(result)).toBe(true);
-
-    // 歌词确实被写进了输入区。
-    expect(m.fill).toHaveBeenCalledWith(lyrics);
-
-    // 画幅比例被选中。
-    expect(m.selectOption).toHaveBeenCalledWith('16:9');
-
-    // 点到了「おまかせで作る」。
-    expect(m.clicked).toContain('#btnOmakaseBig');
+    expect(result.path).toBe(join(outputDir, 'jizura-pv.mp4'));
+    expect(existsSync(result.path)).toBe(true);
+    expect(result.bytes).toBeGreaterThan(0);
+    expect(result.aspect).toBe('16:9');
+    expect(result.resolution).toBe(1080);
+    expect(result.fps).toBe(24);
+    expect(result.style).toBe('noir');
+    expect(result.mood).toBe('emotional');
+    expect(result.seed).toBe(42);
+    // 给了音频，所以踩点与段落对比都应当生效。
+    expect(result.bpm).toBe(120);
+    expect(result.dynamicsApplied).toBe(true);
 
     // 浏览器进程在 finally 中被关闭。
     expect(m.browserClose).toHaveBeenCalled();
     expect(m.contextClose).toHaveBeenCalled();
   });
 
-  it('首次访问时先关掉新手引导浮层再操作', async () => {
+  it('提供音频时会等待异步分析完成并读回 BPM 证据', async () => {
     const outputDir = await makeTempDir();
-    for (const selector of ['#tour', '#tour .tour-skip']) {
-      m.present.add(selector);
-      m.visible.add(selector);
-    }
     m.waitForEvent.mockResolvedValue({
-      suggestedFilename: () => 'after-tour.mp4',
+      suggestedFilename: () => 'beat.mp4',
       saveAs: async (target: string) => {
         await writeFile(target, 'x');
       },
     });
 
-    const result = await generateJizuraPv({
-      lyrics: '引导层テスト',
-      stylePreset: 'auto',
-      aspectRatio: '16:9',
-      outputFormat: 'mp4',
-      outputDir,
-    });
-
-    expect(result.endsWith('after-tour.mp4')).toBe(true);
-    // 引导层是全屏 modal，必须在点「おまかせ」之前关掉，否则它会吞掉所有点击。
-    expect(m.clicked).toContain('#tour .tour-skip');
-    expect(m.clicked.indexOf('#tour .tour-skip')).toBeLessThan(
-      m.clicked.indexOf('#btnOmakaseBig'),
+    const result = await generateJizuraPv(
+      makeRequest({ outputDir, audioPath: join(outputDir, 'song.mp3') }),
     );
-  });
 
-  it('audioPath 存在时通过 setInputFiles 加载音频', async () => {
-    const outputDir = await makeTempDir();
-    m.waitForEvent.mockResolvedValue({
-      suggestedFilename: () => 'with-audio.mp4',
-      saveAs: async (target: string) => {
-        await writeFile(target, 'x');
-      },
-    });
+    // 等待函数里出现了对 J.ui.audio 的探测 —— 这就是"等踩点完成"的依据。
+    const waitedForAudio = m.waitForFunction.mock.calls.some((call) =>
+      String(call[0]).includes('J.ui.audio'),
+    );
+    expect(waitedForAudio).toBe(true);
 
-    await generateJizuraPv({
-      lyrics: '一行的歌词',
-      audioPath: join(outputDir, 'song.mp3'),
-      stylePreset: 'auto',
-      aspectRatio: '9:16',
-      outputFormat: 'mp4',
-      outputDir,
-    });
+    expect(result.bpm).toBe(120);
+    expect(result.beatCount).toBe(25);
+    expect(result.audioDuration).toBe(12);
 
     expect(m.setInputFiles).toHaveBeenCalledTimes(1);
     expect(m.setInputFiles.mock.calls[0]?.[1]).toBe(join(outputDir, 'song.mp3'));
-    expect(m.selectOption).toHaveBeenCalledWith('9:16');
   });
 
-  it('非 auto 的风格预设会点击对应样式卡片', async () => {
+  it('stylePreset 会展开成 style + mood + intensity 注入页面', async () => {
     const outputDir = await makeTempDir();
-    for (const selector of ['button[role="tab"][data-tab="style"]', '#styleGrid button[data-k="noir"]']) {
-      m.present.add(selector);
-      m.visible.add(selector);
-    }
     m.waitForEvent.mockResolvedValue({
-      suggestedFilename: () => 'dark.mp4',
+      suggestedFilename: () => 'preset.mp4',
       saveAs: async (target: string) => {
         await writeFile(target, 'x');
       },
     });
 
-    await generateJizuraPv({
-      lyrics: '暗い夜',
-      stylePreset: 'dark',
-      aspectRatio: '1:1',
-      outputFormat: 'mp4',
-      outputDir,
+    await generateJizuraPv(makeRequest({ outputDir, stylePreset: 'dark' }));
+
+    expect(configureArg()).toMatchObject({
+      style: 'noir',
+      mood: 'emotional',
+      intensity: 0.65,
+      aspect: '16:9',
+      resolution: 1080,
+      fps: 24,
+      keyBg: 'off',
+    });
+  });
+
+  it('显式 mood / intensity / theme / seed 会覆盖预设推断值', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'explicit.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
     });
 
-    expect(m.clicked).toContain('#styleGrid button[data-k="noir"]');
-    // 样式必须在「おまかせ」之后应用，否则会被重掷覆盖。
-    expect(m.clicked.indexOf('#btnOmakaseBig')).toBeLessThan(
-      m.clicked.indexOf('#styleGrid button[data-k="noir"]'),
+    await generateJizuraPv(
+      makeRequest({
+        outputDir,
+        stylePreset: 'dark',
+        mood: 'calm',
+        intensity: 0.2,
+        theme: 'ballad',
+        seed: 1234,
+        title: '曲名',
+        artist: '歌手',
+        keyBg: 'green',
+      }),
     );
+
+    expect(configureArg()).toMatchObject({
+      style: 'noir',
+      mood: 'calm',
+      intensity: 0.2,
+      themeId: 'ballad',
+      seed: 1234,
+      title: '曲名',
+      artist: '歌手',
+      keyBg: 'green',
+    });
+  });
+
+  it('显式传入 seed 时返回该 seed，便于复现', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'seeded.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    const result = await generateJizuraPv(makeRequest({ outputDir, seed: 20261007 }));
+
+    // configureProject 返回的是 omakase 派生的 seed，但对外应当是调用方给的复现键。
+    expect(result.seed).toBe(20261007);
+  });
+
+  it('stylePreset 为 auto 时不覆盖样式，交给随机', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'auto.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    await generateJizuraPv(makeRequest({ outputDir, stylePreset: 'auto' }));
+
+    expect(configureArg()).toMatchObject({ style: null, mood: null, intensity: null });
+  });
+
+  it('有音频且 autoDynamics 开启时应用能量段落对比', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'dyn.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    const result = await generateJizuraPv(
+      makeRequest({ outputDir, audioPath: join(outputDir, 'a.mp3') }),
+    );
+
+    const dynamicsArg = m.evaluateArgs.find(
+      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietRatio' in a,
+    );
+    expect(dynamicsArg).toBeDefined();
+    expect(dynamicsArg?.['quietCuts']).toBe(1);
+    expect(dynamicsArg?.['loudCuts']).toBe(3);
+    expect(result.dynamicsApplied).toBe(true);
+  });
+
+  it('autoDynamics 关闭时不应用段落对比', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'nodyn.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    const result = await generateJizuraPv(
+      makeRequest({ outputDir, audioPath: join(outputDir, 'a.mp3'), autoDynamics: false }),
+    );
+
+    const dynamicsArg = m.evaluateArgs.find(
+      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietRatio' in a,
+    );
+    expect(dynamicsArg).toBeUndefined();
+    expect(result.dynamicsApplied).toBe(false);
+  });
+
+  it('没有音频时不做段落对比', async () => {
+    const outputDir = await makeTempDir();
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'noaudio.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    const result = await generateJizuraPv(makeRequest({ outputDir }));
+
+    expect(result.bpm).toBe(0);
+    expect(result.beatCount).toBe(0);
+    expect(result.dynamicsApplied).toBe(false);
   });
 
   it('png_sequence 走連番 PNG 导出按钮', async () => {
@@ -262,24 +412,17 @@ describe('generate_jizura_pv 实现', () => {
       },
     });
 
-    const result = await generateJizuraPv({
-      lyrics: '連番',
-      stylePreset: 'auto',
-      aspectRatio: '16:9',
-      outputFormat: 'png_sequence',
-      outputDir,
-    });
+    const result = await generateJizuraPv(makeRequest({ outputDir, outputFormat: 'png_sequence' }));
 
     expect(m.clicked).toContain('#ePNG');
-    expect(result.endsWith('frames.zip')).toBe(true);
+    expect(result.path.endsWith('frames.zip')).toBe(true);
   });
 
   it('取消信号触发时关闭浏览器进程', async () => {
     const outputDir = await makeTempDir();
     const controller = new AbortController();
 
-    // 页面导航永不自行完成，只在取消时以 "target closed" 失败，
-    // 模拟 Playwright 在浏览器被关闭后的真实表现。
+    // 页面导航永不自行完成，只在取消时以 "target closed" 失败。
     m.goto.mockImplementation(
       () =>
         new Promise((_resolve, reject) => {
@@ -291,55 +434,81 @@ describe('generate_jizura_pv 实现', () => {
         }),
     );
 
-    const pending = generateJizuraPv({
-      lyrics: 'キャンセル',
-      stylePreset: 'auto',
-      aspectRatio: '16:9',
-      outputFormat: 'mp4',
-      outputDir,
-      signal: controller.signal,
-    });
+    const pending = generateJizuraPv(makeRequest({ outputDir, signal: controller.signal }));
 
-    // 等流程真正走到导航，再触发取消。
     await vi.waitFor(() => {
       expect(m.goto).toHaveBeenCalled();
     });
-    await flush();
 
     controller.abort();
 
     await expect(pending).rejects.toThrow();
-
-    // 取消处理器立刻关闭进程，finally 再兜底一次。
     expect(m.browserClose).toHaveBeenCalled();
     expect(m.contextClose).toHaveBeenCalled();
   });
 
-  it('歌词为空时返回空串且不启动浏览器', async () => {
-    const result = await generateJizuraPv({
-      lyrics: '   \n  ',
-      stylePreset: 'auto',
-      aspectRatio: '16:9',
-      outputFormat: 'mp4',
-    });
+  it('歌词为空时返回 canonical 空结果且不启动浏览器', async () => {
+    const result = await generateJizuraPv(makeRequest({ lyrics: '   \n  ' }));
 
-    expect(result).toBe('');
+    expect(result).toEqual(emptyResult());
+    expect(result.path).toBe('');
     expect(m.launch).not.toHaveBeenCalled();
+  });
+
+  it('音频分析超时时抛错并清理浏览器', async () => {
+    const outputDir = await makeTempDir();
+    m.audioAnalysisFails = true;
+
+    await expect(
+      generateJizuraPv(makeRequest({ outputDir, audioPath: join(outputDir, 'bad.flac') })),
+    ).rejects.toThrow(/没有完成分析/);
+
+    expect(m.browserClose).toHaveBeenCalled();
   });
 
   it('页面加载失败时直接抛出并清理浏览器', async () => {
     m.goto.mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED'));
 
-    await expect(
-      generateJizuraPv({
-        lyrics: '失敗',
-        stylePreset: 'auto',
-        aspectRatio: '16:9',
-        outputFormat: 'mp4',
-      }),
-    ).rejects.toThrow('ERR_NAME_NOT_RESOLVED');
-
+    await expect(generateJizuraPv(makeRequest())).rejects.toThrow('ERR_NAME_NOT_RESOLVED');
     expect(m.browserClose).toHaveBeenCalled();
+  });
+});
+
+describe('可单独调用的页面操作', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.evaluateArgs.length = 0;
+    m.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) => {
+      m.evaluateArgs.push(arg);
+      const src = typeof fn === 'function' ? fn.toString() : '';
+      if (src.includes('cfg.aspect')) return m.configureResult;
+      if (src.includes('quietRatio')) return m.dynamicsResult;
+      return {};
+    });
+  });
+
+  it('configureProject 会把 omakase 与显式覆盖一起下发，并返回实际生效值', async () => {
+    const result = await configureProject(page as never, {
+      aspect: '9:16',
+      resolution: 2160,
+      fps: 60,
+      title: 't',
+      artist: 'a',
+      keyBg: 'black',
+      themeId: 'wa',
+      style: 'paper',
+      mood: 'calm',
+      intensity: 0.4,
+      seed: 7,
+    });
+
+    expect(result).toEqual({ style: 'noir', mood: 'emotional', seed: 42 });
+    expect(configureArg()).toMatchObject({ aspect: '9:16', resolution: 2160, fps: 60, themeId: 'wa' });
+  });
+
+  it('applyDynamics 返回行数统计', async () => {
+    const result = await applyDynamics(page as never);
+    expect(result).toEqual({ lines: 4, loud: 3, quiet: 1 });
   });
 });
 
@@ -350,8 +519,7 @@ describe('路径辅助函数', () => {
   });
 
   it('resolveOutputDir 把相对路径解析为绝对路径', () => {
-    const resolved = resolveOutputDir('out');
-    expect(resolved.startsWith(process.cwd())).toBe(true);
+    expect(resolveOutputDir('out').startsWith(process.cwd())).toBe(true);
   });
 
   it('uniquePath 在文件已存在时追加序号', async () => {
