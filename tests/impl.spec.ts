@@ -133,6 +133,7 @@ function makeRequest(overrides: Record<string, unknown> = {}) {
     aspectRatio: '16:9' as const,
     resolution: 1080 as const,
     fps: 24 as const,
+    quality: 'high' as const,
     outputFormat: 'mp4' as const,
     keyBg: 'off' as const,
     ...overrides,
@@ -220,6 +221,7 @@ describe('generate_jizura_pv 实现', () => {
     expect(result.aspect).toBe('16:9');
     expect(result.resolution).toBe(1080);
     expect(result.fps).toBe(24);
+    expect(result.quality).toBe('high');
     expect(result.style).toBe('noir');
     expect(result.mood).toBe('emotional');
     expect(result.seed).toBe(42);
@@ -277,6 +279,7 @@ describe('generate_jizura_pv 实现', () => {
       aspect: '16:9',
       resolution: 1080,
       fps: 24,
+      quality: 'high',
       keyBg: 'off',
     });
   });
@@ -301,6 +304,7 @@ describe('generate_jizura_pv 实现', () => {
         title: '曲名',
         artist: '歌手',
         keyBg: 'green',
+        quality: 'max',
       }),
     );
 
@@ -313,11 +317,11 @@ describe('generate_jizura_pv 实现', () => {
       title: '曲名',
       artist: '歌手',
       keyBg: 'green',
+      quality: 'max',
     });
   });
 
-  it('显式传入 seed 时返回该 seed，便于复现', async () => {
-    const outputDir = await makeTempDir();
+  it('显式传入 seed 时返回该 seed，便于复现', async () => {    const outputDir = await makeTempDir();
     m.waitForEvent.mockResolvedValue({
       suggestedFilename: () => 'seeded.mp4',
       saveAs: async (target: string) => {

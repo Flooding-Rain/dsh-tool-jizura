@@ -45,6 +45,15 @@ export type OutputFormat = 'mp4' | 'png_sequence';
 /** 合成用背景。 */
 export type KeyBackground = 'off' | 'green' | 'black';
 
+/**
+ * 导出画质档位，决定视频码率。
+ *
+ * JIZURA 按 `宽 × 高 × 帧率 × 系数` 估算目标码率（standard 0.16 / high 0.28 / max 0.42），
+ * 再按像素量封顶（≤2.2MP 时 40 Mbps、≤3.8MP 时 60 Mbps、更大 90 Mbps）——因为硬件编码器
+ * 常常拒绝过高码率。所以 1080p60 选 `max` 实际会落在 40 Mbps 而不是 52 Mbps。
+ */
+export type ExportQuality = 'standard' | 'high' | 'max';
+
 /** 一次 PV 生成请求。 */
 export interface JizuraPvRequest {
   /** 歌词文本，支持多行。 */
@@ -67,6 +76,8 @@ export interface JizuraPvRequest {
   readonly resolution: Resolution;
   /** 输出帧率。 */
   readonly fps: Fps;
+  /** 导出画质档位。 */
+  readonly quality: ExportQuality;
   /** 输出格式。 */
   readonly outputFormat: OutputFormat;
   /** 输出目录的绝对路径；省略时使用工作目录下的 `jizura-pv-output`。 */
@@ -107,6 +118,8 @@ export interface JizuraPvResult {
   readonly resolution: number;
   /** 帧率。 */
   readonly fps: number;
+  /** 导出画质档位；空串表示未生成。 */
+  readonly quality: string;
   /** 产物字节数；未生成时为 0。 */
   readonly bytes: number;
   /** 能量包络驱动的段落对比是否生效。 */
@@ -248,6 +261,7 @@ export function emptyResult(): JizuraPvResult {
     aspect: '',
     resolution: 0,
     fps: 0,
+    quality: '',
     bytes: 0,
     dynamicsApplied: false,
   };
@@ -411,6 +425,7 @@ interface ConfigureOptions {
   readonly aspect: AspectRatio;
   readonly resolution: Resolution;
   readonly fps: Fps;
+  readonly quality: ExportQuality;
   readonly title: string;
   readonly artist: string;
   readonly keyBg: KeyBackground;
@@ -454,6 +469,9 @@ export async function configureProject(page: Page, options: ConfigureOptions): P
     P['aspect'] = cfg.aspect;
     P['res'] = cfg.resolution;
     P['fps'] = cfg.fps;
+    // quality 不在 J.defaultProject() 里，但界面读的是 `S.project.quality || 'high'`，
+    // 导出时也把它作为码率档位传下去，所以直接写这个字段即可生效。
+    P['quality'] = cfg.quality;
     P['title'] = cfg.title;
     P['artist'] = cfg.artist;
     P['keyBg'] = cfg.keyBg;
@@ -670,6 +688,7 @@ export async function generateJizuraPv(request: JizuraPvRequest): Promise<Jizura
       aspect: request.aspectRatio,
       resolution: request.resolution,
       fps: request.fps,
+      quality: request.quality,
       title: request.title ?? '',
       artist: request.artist ?? '',
       keyBg: request.keyBg,
@@ -715,6 +734,7 @@ export async function generateJizuraPv(request: JizuraPvRequest): Promise<Jizura
       aspect: request.aspectRatio,
       resolution: request.resolution,
       fps: request.fps,
+      quality: request.quality,
       bytes: info.size,
       dynamicsApplied,
     };

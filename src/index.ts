@@ -107,6 +107,14 @@ export function apply(ctx: Context): void {
           default: 24,
           description: '输出帧率。',
         },
+        quality: {
+          type: 'string',
+          enum: ['standard', 'high', 'max'],
+          default: 'high',
+          description:
+            '导出画质档位，决定视频码率：按 宽×高×帧率 估算，standard 用 0.16、high 用 0.28、' +
+            'max 用 0.42 的系数，再按像素量封顶（约 40~90 Mbps）。档位越高文件越大、编码越慢。',
+        },
         outputFormat: {
           type: 'string',
           enum: ['mp4', 'png_sequence'],
@@ -161,6 +169,7 @@ export function apply(ctx: Context): void {
             aspect: { type: 'string', description: '画幅。', required: true },
             resolution: { type: 'number', description: '分辨率高度。', required: true },
             fps: { type: 'number', description: '帧率。', required: true },
+            quality: { type: 'string', description: '导出画质档位。', required: true },
             bytes: { type: 'number', description: '产物字节数。', required: true },
             dynamicsApplied: {
               type: 'boolean',
@@ -178,7 +187,8 @@ export function apply(ctx: Context): void {
           const rows: string[] = [`PV 已生成: ${value.path}`];
 
           rows.push(
-            `  画面 ${value.aspect} / ${value.resolution}p / ${value.fps}fps · ${formatBytes(value.bytes)}`,
+            `  画面 ${value.aspect} / ${value.resolution}p / ${value.fps}fps · ` +
+              `画质 ${value.quality} · ${formatBytes(value.bytes)}`,
           );
 
           const look = [`样式 ${value.style}`];
@@ -210,6 +220,7 @@ export function apply(ctx: Context): void {
           aspectRatio: args.aspectRatio ?? '16:9',
           resolution: args.resolution ?? 1080,
           fps: args.fps ?? 24,
+          quality: args.quality ?? 'high',
           outputFormat: args.outputFormat ?? 'mp4',
           outputDir: args.outputDir,
           title: args.title,

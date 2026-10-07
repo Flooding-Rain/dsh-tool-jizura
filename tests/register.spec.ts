@@ -43,6 +43,7 @@ function makeValue(overrides: Record<string, unknown> = {}) {
     aspect: '16:9',
     resolution: 1080,
     fps: 24,
+    quality: 'high',
     bytes: 20_423_484,
     dynamicsApplied: true,
     ...overrides,
@@ -100,6 +101,7 @@ describe('dsh-tool-jizura 注册契约', () => {
         'mood',
         'outputDir',
         'outputFormat',
+        'quality',
         'resolution',
         'seed',
         'stylePreset',
@@ -145,6 +147,11 @@ describe('dsh-tool-jizura 注册契约', () => {
     });
     expect(parameters['resolution']).toMatchObject({ type: 'integer', enum: [720, 1080, 1440, 2160], default: 1080 });
     expect(parameters['fps']).toMatchObject({ type: 'integer', enum: [24, 30, 60], default: 24 });
+    expect(parameters['quality']).toMatchObject({
+      type: 'string',
+      enum: ['standard', 'high', 'max'],
+      default: 'high',
+    });
     expect(parameters['outputFormat']).toMatchObject({
       type: 'string',
       enum: ['mp4', 'png_sequence'],
@@ -177,6 +184,7 @@ describe('dsh-tool-jizura 注册契约', () => {
         'intensity',
         'mood',
         'path',
+        'quality',
         'resolution',
         'seed',
         'style',
@@ -202,6 +210,7 @@ describe('dsh-tool-jizura 注册契约', () => {
     expect(text).toContain('PV 已生成: /tmp/pv.mp4');
     expect(text).toContain('16:9');
     expect(text).toContain('1080p');
+    expect(text).toContain('画质 high');
     expect(text).toContain('BPM 120');
     expect(text).toContain('25 拍');
     expect(text).toContain('noir');

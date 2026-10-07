@@ -18,7 +18,9 @@
 - **情绪 + 强度**：可指定 8 种情绪（`J.MOODS`）与 0~1 的强度，强度会在该情绪自带的区间内线性插值，
   直接驱动 JIZURA 的 13 个效果强度参数（motion / glitch / chroma / texture / density …）。
 - **自动段落对比**：按音乐能量包络自动判定每一行的响度，让安静的段落收敛、激烈的段落切得更碎。
-- **主题 / 曲名 / 画幅 / 分辨率 / 帧率 / 绿幕背景 / 随机种子**，以及可复现的确定性输出。
+- **画质 / 帧率 / 分辨率 / 画幅**：`quality` 决定视频码率（`standard` / `high` / `max`），
+  `fps` 可选 24 / 30 / 60，`resolution` 可选 720 / 1080 / 1440 / 2160。
+- **主题 / 曲名 / 艺术家 / 绿幕背景 / 随机种子**，以及可复现的确定性输出。
 - 遵守 DSH 的取消信号：调用被中止时立即关闭浏览器进程。
 
 ## 安装
@@ -84,7 +86,8 @@ npx playwright install chromium
 | `autoDynamics` | boolean | | `true` | 按音乐能量自动做段落对比（仅有音频时有效）。 |
 | `aspectRatio` | string | | `16:9` | `16:9` \| `9:16` \| `1:1` |
 | `resolution` | integer | | `1080` | `720` \| `1080` \| `1440` \| `2160` |
-| `fps` | integer | | `24` | `24` \| `30` \| `60` |
+| `fps` | integer | | `24` | `24` \| `30` \| `60`。 |
+| `quality` | string | | `high` | `standard` \| `high` \| `max`，决定视频码率。 |
 | `outputFormat` | string | | `mp4` | `mp4` \| `png_sequence` |
 | `outputDir` | string | | `./jizura-pv-output` | 输出目录绝对路径，不存在会自动创建。 |
 | `keyBg` | string | | `off` | `off` \| `green` \| `black`，合成用纯色背景。 |
@@ -118,6 +121,7 @@ npx playwright install chromium
   "aspect": "16:9",
   "resolution": 1080,
   "fps": 24,
+  "quality": "high",       // 导出画质档位
   "bytes": 7111804,        // 产物字节数
   "dynamicsApplied": true  // 能量驱动的段落对比是否生效
 }
@@ -127,7 +131,7 @@ npx playwright install chromium
 
 ```
 PV 已生成: D:\output\pv\夜明け.mp4
-  画面 16:9 / 1080p / 24fps · 6.8 MB
+  画面 16:9 / 1080p / 24fps · 画质 high · 6.8 MB
   样式 noir · 情绪 emotional · 强度 0.70
   踩点 BPM 120 · 25 拍 · 音频 12.0s
   已按音乐能量做段落对比
@@ -300,6 +304,21 @@ SUCCESS (28.7s)
 ```
 
 即「载入音频 → 等 BPM 检测 → 注入样式/情绪/强度 → 按能量做段落对比 → 导出」全程无人工干预。
+
+**（三）画质与帧率的实际影响** —— 同一段素材、同一个 `seed`，只改 `quality` 与 `fps`：
+
+| 配置 | 产物大小 | 编码耗时 |
+| --- | --- | --- |
+| 720p / 24fps / `standard` | 4,523,934 B | 23.1s |
+| 720p / 24fps / `max` | 10,094,872 B（**2.23×**） | 23.8s（1.03×） |
+| 720p / 60fps / `max` | 19,931,162 B（**1.97×**） | 45.0s（**1.89×**） |
+
+结论：`quality` 确实改变码率（`max` 约为 `standard` 的 2.2 倍，接近系数比 0.42/0.16），
+且对编码耗时几乎无影响；`fps` 翻倍会让体积与耗时都接近翻倍。
+
+> `quality` 并不在 `J.defaultProject()` 里，界面读的是 `S.project.quality || 'high'`。
+> 它之所以能用，是因为导出路径把它作为码率档位传给了 `J.videoBitrate()`。上面这组实测就是
+> 为了确认"写了真的生效"，而不是只写进了一个没人读的字段。
 
 ## 致谢与许可
 
