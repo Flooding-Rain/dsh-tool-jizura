@@ -92,8 +92,10 @@ npx playwright install chromium
 
 ### 关于 `stylePreset`
 
-JIZURA 没有名为 light/dark/neon 的预设，它的 12 个样式包定义在 `src/04_styles.js`
-的 `J.STYLES` / `J.STYLE_ORDER`。本插件挑选语义最接近的样式包：
+JIZURA 没有名为 light/dark/neon 的预设。它把样式包定义在 `src/04_styles.js`
+的 `J.STYLES` / `J.STYLE_ORDER`（基础 12 个，运行时另挂 15 个扩展包），
+再在 `#styleGrid` 里渲染成可点击的卡片（卡片的 `data-k` 就是样式 key）。
+本插件挑选语义最接近的：
 
 | 预设 | JIZURA 样式包 | 特征 |
 | --- | --- | --- |
@@ -134,13 +136,20 @@ JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更�
 | PNG 序列导出 | `#ePNG` → `#btnPNG` | `<button id="ePNG">連番PNG（ZIP）</button>` |
 | 「書き出し」标签页 | `button[role="tab"][data-tab="out"]` | 詳細模式的兜底路径 |
 
+> 上表已于 2026-10-07 用 Playwright 1.63 + Chrome Headless Shell 153 对真实页面
+> <https://852wa.github.io/JIZURA/> 逐项探测确认：**所有首选选择器均命中且可见**。
+> 下面第 1 个坑正是这次探测发现的——它推翻了仅凭 `body.html` 得出的结论。
+
 ### 两个必须知道的坑
 
-1. **`#btnOmakaseBig` 默认不可见。**
-   它位于 `<div id="easyPanel" hidden>` 内，而 JIZURA 默认是「詳細」模式
-   （`#modePro` 带 `aria-pressed="true"`）。所以 `clickOmakase()` 会先点 `#modeEasy`
-   切到かんたん模式、等面板可见，再点大按钮；万一模式切换失败，则回退到
-   詳細模式里可见的 `#btnOmakase` / `#btnOmakaseTop`。
+1. **静态模板与实际运行时状态相反。**
+   `app/body.html` 里 `#easyPanel` 带 `hidden`、`#modePro` 带 `aria-pressed="true"`，
+   看起来默认是「詳細」模式；但实测页面加载完成后 JS 会把默认模式设为**「かんたん」**
+   （`#modeEasy[aria-pressed="true"]`、`#easyPanel` 不含 `hidden`、`#btnOmakaseBig` 可见），
+   此时 `#outAspect` / `#btnMP4` / `#btnPNG` 与各标签页反而是隐藏的。
+   因此 `clickOmakase()` 先直接找可见的 `#btnOmakaseBig`；只有找不到时才点 `#modeEasy`
+   切模式并等面板出现，最后才回退到詳細模式的 `#btnOmakase` / `#btnOmakaseTop`。
+   **不要照抄 `body.html` 推断初始可见性。**
 
 2. **风格预设必须在「おまかせ」之后应用。**
    `おまかせ` 会重掷 `style`、`mood`、配色与构成（见 `src/08b_omakase.js`）。
@@ -152,9 +161,12 @@ JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更�
 
 1. 打开 <https://852wa.github.io/JIZURA/>，用开发者工具确认新元素。
 2. 更新 `src/impl.ts` 的 `SELECTORS`（尽量追加候选而非替换，保留兜底）。
-3. 若是样式包改名，同步更新 `STYLE_PRESET_TO_KEY`；
-   当前 12 个样式 key 依次为
-   `noir` `crimson` `caution` `magenta` `paper` `hud` `mint` `specimen` `transit` `blueprint` `rouge` `mono`。
+3. 若是样式包改名，同步更新 `STYLE_PRESET_TO_KEY`。实测 `#styleGrid` 会渲染 **27** 张卡片：
+   `J.STYLE_ORDER` 声明的基础 12 个
+   （`noir` `crimson` `caution` `magenta` `paper` `hud` `mint` `specimen` `transit` `blueprint` `rouge` `mono`），
+   加上追加分 / 恐怖 / 和风的 15 个
+   （`hrRuin` `hrNightRec` `hrCurse` `sakura` `ocean` `sunset` `forest` `vapor` `newsprint` `synth80` `kraft` `candy` `acid` `sumi` `gold`）。
+   本插件的三个预设都落在基础 12 个内，因此不受「追加分」开关影响。
 4. 跑 `npm test`（测试里的假 DOM 是手写的，不受真实页面影响，仍应全绿）。
 5. 用真实页面做一次端到端验证（见下）。
 
