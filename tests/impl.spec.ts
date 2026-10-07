@@ -54,7 +54,13 @@ function locatorFor(selector: string) {
     selectOption: async (value: string) => {
       m.selectOption(value);
     },
-    waitFor: async () => undefined,
+    // 与真实 Playwright 一致：元素不存在时等待会超时失败。
+    waitFor: async () => {
+      if (!m.present.has(selector)) {
+        throw new Error(`Timeout waiting for ${selector}`);
+      }
+      return undefined;
+    },
   };
 }
 
@@ -65,6 +71,7 @@ const page = {
   locator: (selector: string) => locatorFor(selector),
   setInputFiles: m.setInputFiles,
   waitForEvent: m.waitForEvent,
+  addStyleTag: async () => undefined,
 };
 
 const context = {
@@ -164,6 +171,35 @@ describe('generate_jizura_pv 实现', () => {
     // 浏览器进程在 finally 中被关闭。
     expect(m.browserClose).toHaveBeenCalled();
     expect(m.contextClose).toHaveBeenCalled();
+  });
+
+  it('首次访问时先关掉新手引导浮层再操作', async () => {
+    const outputDir = await makeTempDir();
+    for (const selector of ['#tour', '#tour .tour-skip']) {
+      m.present.add(selector);
+      m.visible.add(selector);
+    }
+    m.waitForEvent.mockResolvedValue({
+      suggestedFilename: () => 'after-tour.mp4',
+      saveAs: async (target: string) => {
+        await writeFile(target, 'x');
+      },
+    });
+
+    const result = await generateJizuraPv({
+      lyrics: '引导层テスト',
+      stylePreset: 'auto',
+      aspectRatio: '16:9',
+      outputFormat: 'mp4',
+      outputDir,
+    });
+
+    expect(result.endsWith('after-tour.mp4')).toBe(true);
+    // 引导层是全屏 modal，必须在点「おまかせ」之前关掉，否则它会吞掉所有点击。
+    expect(m.clicked).toContain('#tour .tour-skip');
+    expect(m.clicked.indexOf('#tour .tour-skip')).toBeLessThan(
+      m.clicked.indexOf('#btnOmakaseBig'),
+    );
   });
 
   it('audioPath 存在时通过 setInputFiles 加载音频', async () => {

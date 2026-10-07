@@ -53,6 +53,13 @@ export interface JizuraPvRequest {
  * 维护方式见 README「JIZURA 界面选择器维护说明」。
  */
 export const SELECTORS = {
+  /**
+   * 首次访问的新手引导浮层。它是 `role="dialog" aria-modal="true"` 的全屏遮罩，
+   * 会吞掉整页的点击事件，必须在任何交互前关掉。
+   */
+  tour: ['#tour'],
+  /** 引导浮层里的「スキップ」按钮。 */
+  tourSkip: ['#tour .tour-skip', '.tour-skip'],
   /** 歌词输入框：`#lyrics` 是 JIZURA 的真实 id，其余为通用兜底。 */
   lyricsInput: [
     '#lyrics',
@@ -113,6 +120,9 @@ const ACTION_TIMEOUT_MS = 20_000;
 
 /** 等待导出下载开始的超时（JIZURA 在浏览器内编码，耗时较长）。 */
 const DOWNLOAD_TIMEOUT_MS = 110_000;
+
+/** 等待新手引导浮层出现的超时；它若不出现，说明这次不是首次访问。 */
+const TOUR_WAIT_MS = 4_000;
 
 /** 使用已解析的绝对输出目录。 */
 export function resolveOutputDir(outputDir?: string | undefined): string {
@@ -195,6 +205,42 @@ async function clickFirst(page: Page, selectors: readonly string[]): Promise<boo
   } catch {
     return false;
   }
+}
+
+/**
+ * 关闭 JIZURA 首次访问的新手引导浮层。
+ *
+ * 该浮层是 `aria-modal="true"` 的全屏 dialog，只要它在，页面上任何点击都会被它
+ * 拦截（Playwright 报 `... intercepts pointer events`）。每次新建浏览器上下文
+ * 都算「首次访问」，所以这一步不能省。
+ *
+ * @returns 是否用「スキップ」正常关掉了浮层。
+ */
+export async function dismissTour(page: Page): Promise<boolean> {
+  const tour = page.locator(SELECTORS.tour[0]).first();
+
+  try {
+    await tour.waitFor({ state: 'visible', timeout: TOUR_WAIT_MS });
+  } catch {
+    return false; // 不是首次访问，没有引导浮层。
+  }
+
+  const skip = page.locator(SELECTORS.tourSkip[0]).first();
+  try {
+    if ((await skip.count()) > 0) {
+      await skip.click({ timeout: ACTION_TIMEOUT_MS });
+      return true;
+    }
+  } catch {
+    /* 点不到就落到下面的强制隐藏 */
+  }
+
+  // 兜底：用样式把浮层藏掉 —— display:none 的元素不再接收指针事件，因此不会
+  // 继续吞掉后续点击。（这里不用 page.evaluate 是为了不把 DOM lib 拉进编译目标。）
+  await page
+    .addStyleTag({ content: '#tour{display:none !important;}' })
+    .catch(() => undefined);
+  return false;
 }
 
 /**
@@ -371,6 +417,9 @@ export async function generateJizuraPv(request: JizuraPvRequest): Promise<string
 
     await page.goto(JIZURA_URL, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
     signal?.throwIfAborted();
+
+    // 必须先关掉首次访问的引导浮层，否则它会拦截后续所有点击。
+    await dismissTour(page);
 
     await fillLyrics(page, request.lyrics);
 

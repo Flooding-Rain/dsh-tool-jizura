@@ -41,6 +41,13 @@ export interface JizuraPvRequest {
  * 维护方式见 README「JIZURA 界面选择器维护说明」。
  */
 export declare const SELECTORS: {
+    /**
+     * 首次访问的新手引导浮层。它是 `role="dialog" aria-modal="true"` 的全屏遮罩，
+     * 会吞掉整页的点击事件，必须在任何交互前关掉。
+     */
+    readonly tour: readonly ['#tour'];
+    /** 引导浮层里的「スキップ」按钮。 */
+    readonly tourSkip: readonly ['#tour .tour-skip', '.tour-skip'];
     /** 歌词输入框：`#lyrics` 是 JIZURA 的真实 id，其余为通用兜底。 */
     readonly lyricsInput: readonly ['#lyrics', 'textarea', '[contenteditable="true"]', '[aria-label*="歌詞"]', '[aria-label*="歌词"]'];
     /** 音频文件输入。 */
@@ -90,6 +97,16 @@ export declare function resolveOutputDir(outputDir?: string | undefined): string
  * @returns 若首选名已存在则追加 `-1`、`-2` … 的绝对路径。
  */
 export declare function uniquePath(dir: string, filename: string): string;
+/**
+ * 关闭 JIZURA 首次访问的新手引导浮层。
+ *
+ * 该浮层是 `aria-modal="true"` 的全屏 dialog，只要它在，页面上任何点击都会被它
+ * 拦截（Playwright 报 `... intercepts pointer events`）。每次新建浏览器上下文
+ * 都算「首次访问」，所以这一步不能省。
+ *
+ * @returns 是否用「スキップ」正常关掉了浮层。
+ */
+export declare function dismissTour(page: Page): Promise<boolean>;
 /**
  * 填入歌词：按优先级探测输入区域。
  *

@@ -3,6 +3,12 @@
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 用的工具插件：把一段歌词交给
 > [JIZURA](https://852wa.github.io/JIZURA/) 在线应用，自动产出**文字 PV**（MP4 视频或連番 PNG）。
 
+![插件驱动 JIZURA 生成文字 PV](docs/demo.png)
+
+上图是插件实际驱动 JIZURA 之后的界面：左侧歌词由 `generate_jizura_pv` 填入，并被解析为
+「4 行 / 8 カット」；右侧「おまかせ」已生效（スタイル：クリムゾン・シグナル）；
+中间是实时预览。该图由无头 Chromium 跑真实流程截取。
+
 ## 功能
 
 注册一个工具 `generate_jizura_pv`。模型只要拿到歌词文本，就能驱动 JIZURA 完成
@@ -124,6 +130,8 @@ JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更�
 
 | 用途 | 候选选择器（按优先级） | 来源 |
 | --- | --- | --- |
+| 新手引导浮层 | `#tour` | `<div id="tour" role="dialog" aria-modal="true">` |
+| 引导层「スキップ」 | `#tour .tour-skip` → `.tour-skip` | 引导层导航里的跳过按钮 |
 | 歌词输入 | `#lyrics` → `textarea` → `[contenteditable="true"]` → `[aria-label*="歌詞"]` → `[aria-label*="歌词"]` | `<textarea id="lyrics">` |
 | 音频文件 | `#audioFile` → `input[type="file"][accept*="audio"]` | `<input id="audioFile" type="file">` |
 | 切「かんたん」模式 | `#modeEasy` | `<button id="modeEasy">かんたん</button>` |
@@ -140,7 +148,7 @@ JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更�
 > <https://852wa.github.io/JIZURA/> 逐项探测确认：**所有首选选择器均命中且可见**。
 > 下面第 1 个坑正是这次探测发现的——它推翻了仅凭 `body.html` 得出的结论。
 
-### 两个必须知道的坑
+### 三个必须知道的坑
 
 1. **静态模板与实际运行时状态相反。**
    `app/body.html` 里 `#easyPanel` 带 `hidden`、`#modePro` 带 `aria-pressed="true"`，
@@ -156,6 +164,13 @@ JIZURA 的 DOM 由 `src/12_ui.js` 在运行时绘制，页面结构一旦变更�
    若先选样式再点おまかせ，样式会被随机覆盖。因此 `generateJizuraPv()` 的顺序是
    「填歌词 → 载音频 → 设画幅 → **点おまかせ** → **应用 stylePreset** → 导出」。
    画幅比例（`#eAspect`）属于输出设置，不受おまかせ影响，所以可以先设。
+
+3. **每次调用都会撞上全屏新手引导浮层，它会吞掉所有点击。**
+   `#tour` 是 `role="dialog" aria-modal="true"` 的遮罩。每次新建浏览器上下文都算
+   「首次访问」，所以**每次调用都会出现**。不处理它，第一次点击就会失败并报
+   `... intercepts pointer events`。这个坑单元测试发现不了，是靠真实端到端跑出来的。
+   因此 `generateJizuraPv()` 在导航完成后立刻调用 `dismissTour()`：优先点
+   `#tour .tour-skip`，点不到则用 `page.addStyleTag()` 把 `#tour` 置为 `display:none` 兜底。
 
 ### 页面结构变更后的修法
 
@@ -205,8 +220,23 @@ lib/types/impl.d.ts
 
 - `tests/register.spec.ts` —— 屏蔽 `@deepseek-ai/dsh-tools`，断言 `name`、`inject`
   与工具定义形状（参数、枚举、`output.schema`、`render`、`timeoutMs`）符合 dsh 契约。
-- `tests/impl.spec.ts` —— 屏蔽 `playwright`，用假 DOM 覆盖主链路、样式应用顺序、
-  导出按钮选择、取消信号清理、空歌词短路、导航失败清理，以及路径辅助函数。
+- `tests/impl.spec.ts` —— 屏蔽 `playwright`，用假 DOM 覆盖主链路、新手引导浮层关闭、
+  样式应用顺序、导出按钮选择、取消信号清理、空歌词短路、导航失败清理，以及路径辅助函数。
+
+当前 `npm test` 共 **20** 个用例（注册契约 9 + 逻辑 11）全部通过。
+
+### 实测记录
+
+在 Windows + Chrome Headless Shell 153 上跑通了一次完整链路：
+
+```
+SUCCESS (94.1s)
+  path: <outputDir>/jizura.mp4
+  size: 20423484 bytes      # ftyp isom / isomavc1mp41（H.264）
+```
+
+即「填歌词 → 点おまかせ → 应用 dark 预设 → 导出 MP4 → 落盘」全程无人工干预，
+耗时约 94 秒，印证了 `timeoutMs: 120000` 的取值。
 
 ## 实现说明
 

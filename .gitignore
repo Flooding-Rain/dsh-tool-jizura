@@ -4,6 +4,10 @@ node_modules/
 .vitest/
 coverage/
 
+# 本地跑插件时的产物
+jizura-pv-output/
+tmp-e2e/
+
 # lib/ 是构建产物，但刻意提交进仓库：
 # `dsh plugin add github:...` 走的是 git 安装，不会自动执行 build，
 # 提交 lib/ 可让安装后开箱即用。
