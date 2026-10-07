@@ -79,11 +79,15 @@ npx playwright install chromium
 | `audioPath` | string | | — | 背景音乐绝对路径。**提供后才会自动踩点。** |
 | `title` | string | | — | 曲名，显示在标题卡 / HUD；也会用作输出文件名。 |
 | `artist` | string | | — | 艺术家名。 |
-| `stylePreset` | string | | `auto` | `auto` \| `light` \| `dark` \| `neon`，展开为下面的 style + mood + intensity。 |
+| `stylePreset` | string | | `auto` | `auto` \| `light` \| `dark` \| `neon`，展开为 style + mood + intensity 三项。 |
+| `styleKey` | string | | — | **直传 JIZURA 的样式 key，优先于 `stylePreset`。**共 27 个，见下节。 |
 | `mood` | string | | 随预设 | `glitch` \| `calm` \| `pop` \| `graphic` \| `editorial` \| `emotional` \| `horror` \| `chaos` |
 | `theme` | string | | — | `lyricpv` \| `kinetic` \| `wa` \| `horror` \| `pop` \| `ballad`，限定随机取材方向。 |
 | `intensity` | number | | 随预设 | `0`~`1`，在该情绪的强度区间内插值。 |
-| `autoDynamics` | boolean | | `true` | 按音乐能量自动做段落对比（仅有音频时有效）。 |
+| `paletteLock` | boolean | | `false` | 锁定样式的首套配色，整片不换色。 |
+| `autoDynamics` | boolean | | `true` | 按音乐能量做段落对比。仅有音频时有效。 |
+| `hideNo` | boolean | | `false` | 隐藏装饰编号（`No.08` 之类）。 |
+| `hideTime` | boolean | | `false` | 隐藏装饰时间码（`LINE 08 · 00:36.52` 之类）。 |
 | `aspectRatio` | string | | `16:9` | `16:9` \| `9:16` \| `1:1` |
 | `resolution` | integer | | `1080` | `720` \| `1080` \| `1440` \| `2160` |
 | `fps` | integer | | `24` | `24` \| `30` \| `60`。 |
@@ -103,6 +107,43 @@ npx playwright install chromium
 | `auto` | 不覆盖 | 不覆盖 | 不覆盖 |
 
 `mood` / `intensity` 显式给出时会覆盖上表的推断值。
+
+### 全部 27 个样式（`styleKey`）
+
+`stylePreset` 只展开 3 个常用样式；想用别的就直接传 `styleKey`。基础 12 个：
+
+`noir` `crimson` `caution` `magenta` `paper` `hud` `mint` `specimen` `transit` `blueprint` `rouge` `mono`
+
+扩展 15 个：
+
+`hrRuin` `hrNightRec` `hrCurse` `sakura` `ocean` `sunset` `forest` `vapor` `newsprint` `synth80` `kraft` `candy` `acid` `sumi` `gold`
+
+扩展样式受「追加分 / 和風」开关影响、平时不会被随机选中，但**直传不受限制**。
+`styleKey` 无效时忽略并沿用 `stylePreset`；实际生效值可从返回值的 `style` 读到。
+
+### `intensity` 到底调了什么
+
+它在**当前情绪的强度区间**内线性插值，一次驱动 13 个参数。以 `calm` 为例，
+`intensity: 0.22` 会得到：
+
+```json
+{ "motion": 0.35, "glitch": 0.09, "chroma": 0.27, "decor": 0.27, "density": 0.29,
+  "texture": 0.58, "bgSwitch": 0.14 }
+```
+
+即 `下限 + (上限 − 下限) × intensity`。同一个 `intensity` 在不同 `mood` 下观感不同。
+
+### `paletteLock` 与 `autoDynamics` 做了什么
+
+- **`paletteLock`**：每个样式含 2~4 套配色，planner 会按 `fx.bgSwitch` 的概率逐行换色
+  （`calm` 的区间是 `[0.1, 0.3]`，几十行累积下来仍会跳好几次）。打开后把 `fx.bgSwitch`
+  压到 `0`，整片维持首套配色。实测：不锁时 90 个 cut 分属 4 套配色，锁后 **90/90 全在第 0 套**。
+- **`autoDynamics`**：算每行平均能量与四分位，以 **planner 自己算出的 cut 数**为基准缩放 ——
+  高于 Q3 的行 ×1.5（至少 +1，切得更碎），低于 Q1 的行 ×0.5（收敛），中间档不动。
+  能量没有起伏（Q1 == Q3）时整体跳过。
+
+> 早期实现把高低两档写死成 `cuts = 3` / `cuts = 1`，而 planner 依 `fx.density` 与行时长算出的
+> 切分常在 4~6 刀 —— **那等于把激烈的段落改慢了**，与「切得更碎」的说法相反。现已改为按基准缩放。
 
 ## 返回值
 
@@ -175,6 +216,50 @@ J.uiApi = { toast, replan, syncUI, pause, seek, flushSave, loadAudioFile, restar
 
 只有三件事必须走 DOM：**填歌词**（走真实输入路径，让 JIZURA 自己的处理器刷新行列表）、
 **塞音频文件**（文件不适合经 `evaluate` 传递）、**点导出按钮**（导出是 UI 驱动的下载）。
+
+## 上游 JIZURA 的行为（决定怎么调参）
+
+以下结论来自对 JIZURA v0.10.1 读源码 + 实测（一次 3 分 41 秒 FLAC / 1080p 的真实出片），直接影响调用方式。
+
+### 导出长度 = **音频长度**，不是歌词长度
+
+`J.computeTiming()` 末段：提供了音频时，`duration` 取 `max(音频时长, 最后一行结束 + 0.2)`。
+所以只写了 57 秒歌词、却给了 221 秒音轨时，导出就是 **221 秒**，后面全是没有 cut 的空白。
+
+**对策**：歌词没铺满音轨时用 `[間奏 N]` 把空隙填掉，否则会出现几十秒空画面。
+想知道导出多长，看音频时长而不是歌词行数。
+
+### `|` 注记（note）在多数行不会显示 —— 双语歌词要写成独立时间戳行
+
+`歌詞|注釈` 是官方记法，但 `11p_layoutsA.js:altCopy()` 只在 `cut.text === cut.lineText` 时才用
+`note`；而一行通常会被切成多个 cut，每个 cut 只拿到行内一段文本，于是 `note` 被跳过。
+**想让译文稳定出现，就得把译文写成独立行并给它显式 LRC 时间戳。**
+
+实测可用的写法（原文 / 译文按 ≈55% / 45% 分配同一句的时长）：
+
+```
+[00:08.90]五月雨は/緑色
+[00:13.00]绿色的/五月雨
+[01:19.90][間奏 11.7]
+```
+
+顺带：`J.detectLang()` 里 `kana >= 2` 先于汉字判定，所以日文原文 + 中文译文混排仍判为 `ja`；
+简体字会回退到系统字体渲染（实测无豆腐块，观感可接受）。
+
+### `[間奏 N]` 支持小数，也可与 LRC 时间戳同时使用
+
+`[01:19.90][間奏 11.7]` 解析正常（先剥时间戳、再匹配间奏）。间奏 ≥ 6 秒时会顺带显示曲名 / 艺术家小字。
+
+### 输出文件名 = `project.title`
+
+`12_ui.js:baseName()` 用 `title`（非法字符替换为 `_`、截断 60 字），`keyBg` 不为 `off` 时追加
+`_greenback` / `_blackback`。插件侧再过一层 `uniquePath()`，重名会追加 `-1`、`-2`。
+
+### 渲染耗时最大的杠杆是 `fx.koma`，不是码率
+
+`fx.koma` 是「每秒画几次」：`0` = 每个输出帧都重绘（最慢），`12` = 每秒 12 次（on twos）。
+`ballad` 主题的候选表是 `[0, 0, 12]`，抽到 `0` 的概率 2/3。同样 5309 帧，实测耗时在
+335s ~ 454s 之间浮动，主要就来自 mood / 主题决定的 `density` 与 `koma`。
 
 ## JIZURA 界面/接口维护说明
 
@@ -270,11 +355,14 @@ lib/types/impl.d.ts
 测试分两层：
 
 - `tests/register.spec.ts` —— 屏蔽 `@deepseek-ai/dsh-tools`，断言 `name`、`inject`
-  与工具定义形状（16 个参数、枚举、`output.schema` 的 13 个全 required 字段、`render`
-  的四种分支、`timeoutMs`）符合 dsh 契约。
+  与工具定义形状（**21 个参数**、枚举与默认值、`output.schema` 的 13 个全 required 字段、
+  `render` 的四种分支、`timeoutMs`）符合 dsh 契约。
 - `tests/impl.spec.ts` —— 屏蔽 `playwright`，用假 DOM 覆盖：引导浮层的 `addInitScript` 注入、
-  等待音频异步分析、预设展开为 style+mood+intensity、显式参数覆盖、段落对比的开关、
-  结构化返回、取消信号清理、空歌词短路、音频超时、导航失败，以及路径辅助函数。
+  等待音频异步分析、预设展开为 style+mood+intensity、显式参数覆盖（含 `styleKey` /
+  `paletteLock` / `hideNo` / `hideTime`）、段落对比的开关与缩放系数、结构化返回、
+  取消信号清理、空歌词短路、音频超时、导航失败，以及路径辅助函数。
+
+共 **33** 个用例。
 
 ## 实测记录
 
@@ -319,6 +407,29 @@ SUCCESS (28.7s)
 > `quality` 并不在 `J.defaultProject()` 里，界面读的是 `S.project.quality || 'high'`。
 > 它之所以能用，是因为导出路径把它作为码率档位传给了 `J.videoBitrate()`。上面这组实测就是
 > 为了确认"写了真的生效"，而不是只写进了一个没人读的字段。
+
+**（四）全长曲子的真实量级** —— 3 分 41 秒（音轨 221 秒）、720p / 24fps、无头软件编码：
+
+| quality | 目标码率 | 实测码率 | 产物 |
+| --- | --- | --- | --- |
+| `standard` | 3.54 Mbps | 3.65 Mbps | 100.8 MB |
+| `high` | 6.19 Mbps | 6.16 Mbps | 170.0 MB |
+
+同一首曲子 5309 帧的墙钟耗时：**335s ~ 454s**（≈12~16 帧/秒），差异主要来自 mood / 主题决定的
+`density` 与 `koma`。由此推算其他配置：
+
+| 配置 | 目标码率 | 221 秒成品 |
+| --- | --- | --- |
+| 1080p / 30fps / `high` | 17.4 Mbps | ≈ 480 MB |
+| 1080p / 30fps / `standard` | 9.95 Mbps | ≈ 275 MB |
+| 1080p / 60fps / `high` | 34.8 Mbps | ≈ 960 MB |
+| 1080p / 60fps / `max` | 40 Mbps（被 cap） | ≈ 1.1 GB |
+
+一部长 221 秒的歌在 1080p / 60fps 下是 **13 260 帧**、像素量再乘 2.25，按同一速度推算要
+**40 分钟以上**（本次 60fps 跑到 30 分钟时中止改 30fps，所以这一行是推算值）。
+
+**这正是把导出等待预算改成按帧数动态估算的原因**：固定 5 分钟连 720p / 24fps 的全长
+（≈7 分钟）都盖不住。
 
 ## 致谢与许可
 

@@ -49,7 +49,7 @@ const m = vi.hoisted(() => ({
   /** 配置注入的假结果。 */
   configureResult: { style: 'noir', mood: 'emotional', seed: 42 },
   /** 段落对比的假结果。 */
-  dynamicsResult: { lines: 4, loud: 3, quiet: 1 },
+  dynamicsResult: { lines: 4, loud: 3, quiet: 1, mid: 0 },
   /** 是否让音频分析超时。 */
   audioAnalysisFails: false,
 }));
@@ -134,6 +134,8 @@ function makeRequest(overrides: Record<string, unknown> = {}) {
     resolution: 1080 as const,
     fps: 24 as const,
     quality: 'high' as const,
+    hideNo: false,
+    hideTime: false,
     outputFormat: 'mp4' as const,
     keyBg: 'off' as const,
     ...overrides,
@@ -172,7 +174,7 @@ describe('generate_jizura_pv 实现', () => {
       const src = typeof fn === 'function' ? fn.toString() : '';
       if (src.includes('a.bpm')) return m.audioInfo;
       if (src.includes('cfg.aspect')) return m.configureResult;
-      if (src.includes('quietRatio')) return m.dynamicsResult;
+      if (src.includes('quietFactor')) return m.dynamicsResult;
       return {};
     });
   });
@@ -363,11 +365,11 @@ describe('generate_jizura_pv 实现', () => {
     );
 
     const dynamicsArg = m.evaluateArgs.find(
-      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietRatio' in a,
+      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietFactor' in a,
     );
     expect(dynamicsArg).toBeDefined();
-    expect(dynamicsArg?.['quietCuts']).toBe(1);
-    expect(dynamicsArg?.['loudCuts']).toBe(3);
+    expect(dynamicsArg?.['quietFactor']).toBe(0.5);
+    expect(dynamicsArg?.['loudFactor']).toBe(1.5);
     expect(result.dynamicsApplied).toBe(true);
   });
 
@@ -385,7 +387,7 @@ describe('generate_jizura_pv 实现', () => {
     );
 
     const dynamicsArg = m.evaluateArgs.find(
-      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietRatio' in a,
+      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && 'quietFactor' in a,
     );
     expect(dynamicsArg).toBeUndefined();
     expect(result.dynamicsApplied).toBe(false);
@@ -486,7 +488,7 @@ describe('可单独调用的页面操作', () => {
       m.evaluateArgs.push(arg);
       const src = typeof fn === 'function' ? fn.toString() : '';
       if (src.includes('cfg.aspect')) return m.configureResult;
-      if (src.includes('quietRatio')) return m.dynamicsResult;
+      if (src.includes('quietFactor')) return m.dynamicsResult;
       return {};
     });
   });
@@ -512,7 +514,7 @@ describe('可单独调用的页面操作', () => {
 
   it('applyDynamics 返回行数统计', async () => {
     const result = await applyDynamics(page as never);
-    expect(result).toEqual({ lines: 4, loud: 3, quiet: 1 });
+    expect(result).toEqual({ lines: 4, loud: 3, quiet: 1, mid: 0 });
   });
 });
 

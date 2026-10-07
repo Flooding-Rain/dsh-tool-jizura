@@ -53,6 +53,27 @@ export interface JizuraPvRequest {
     readonly intensity?: number | undefined;
     /** 是否用音频能量包络自动做段落对比（高能量行切得更碎）。 */
     readonly autoDynamics: boolean;
+    /**
+     * 是否锁定样式的**首套配色**。
+     *
+     * JIZURA 的每个样式含 2~4 套配色，画面默认会在行与行之间换色（由 `fx.bgSwitch` 控制概率）。
+     * 打开后把 `fx.bgSwitch` 压到 0，整片维持同一色调，适合需要统一意境的抒情作品。
+     *
+     * 实测 `bgSwitch = 0` 与「截断 `J.STYLES[style].schemes`」得到的 scheme 分布完全一致
+     * （90 个 cut 全部落在第 0 套），但前者是非破坏性的 —— 截断会永久改写页面内的全局样式表，
+     * 一旦复用 page（批量出片）就会污染后续调用。
+     */
+    readonly paletteLock?: boolean | undefined;
+    /**
+     * 直接指定 JIZURA 的样式 key（如 `specimen` / `sakura` / `sumi`），优先于 `stylePreset`。
+     *
+     * `stylePreset` 只覆盖 3 个常用样式，而 JIZURA 内置 27 个。key 无效时忽略并沿用预设。
+     */
+    readonly styleKey?: string | undefined;
+    /** 是否隐藏画面上的装饰编号（`No.08` 之类）。 */
+    readonly hideNo: boolean;
+    /** 是否隐藏画面上的装饰时间码（`LINE 08 · 00:36.52` 之类）。 */
+    readonly hideTime: boolean;
     /** 输出画幅比例。 */
     readonly aspectRatio: AspectRatio;
     /** 输出分辨率。 */
@@ -216,6 +237,14 @@ interface ConfigureOptions {
     readonly mood: Mood | null;
     readonly intensity: number | null;
     readonly seed: number | null;
+    /** 是否把 `fx.bgSwitch` 压到 0 以锁定首套配色。 */
+    readonly paletteLock: boolean;
+    /** 直接指定的样式 key；无效时忽略并沿用预设。 */
+    readonly styleKey: string | null;
+    /** 是否隐藏装饰编号。 */
+    readonly hideNo: boolean;
+    /** 是否隐藏装饰时间码。 */
+    readonly hideTime: boolean;
 }
 /** 配置注入后从页面读回的实际生效值。 */
 interface ConfigureResult {
@@ -234,24 +263,33 @@ export declare function configureProject(page: Page, options: ConfigureOptions):
 interface DynamicsResult {
     /** 参与判定的行数。 */
     readonly lines: number;
-    /** 被判为「响」的行数。 */
+    /** 被判为「响」的行数（切得更碎）。 */
     readonly loud: number;
-    /** 被判为「轻」的行数。 */
+    /** 被判为「轻」的行数（收敛）。 */
     readonly quiet: number;
+    /** 保持 planner 自动切分的行数。 */
+    readonly mid: number;
 }
 /**
  * 用音频能量包络自动做段落对比。
  *
- * 算出每行的平均能量，以中位数为界：明显偏轻的行收敛为单一切分
- * （`overrides[line].cuts = 1`，视觉更静），其余行切成更多刀
- * （`cuts = 3`，节奏更碎）。`cuts` 是 `08_planner.js` 里真正被读取的按行控制。
+ * 先算每行平均能量与其四分位，再以 **planner 自己算出的 cut 数**为基准缩放：
+ * 高能量行 ×1.5（至少 +1，切得更碎），低能量行 ×0.5（收敛），中间档保持自动值。
+ * 频谱没有起伏（Q1 == Q3）时整体跳过。
  *
- * `overrides[line].cutQuiet` 看着更适合做这件事，但它在 planner 与渲染里都没有
- * 被读取，是 UI-only 的死数据，用了不会有任何效果。
+ * `overrides[line].cutQuiet` 看着更适合做这件事，但它在 planner 与渲染里都没有被读取，
+ * 是 UI-only 的死数据，用了不会有任何效果。
  */
-export declare function applyDynamics(page: Page, quietRatio?: number): Promise<DynamicsResult>;
-/** 触发导出并等待下载事件。 */
-export declare function triggerExport(page: Page, format: OutputFormat): Promise<Download>;
+export declare function applyDynamics(page: Page): Promise<DynamicsResult>;
+/**
+ * 估算这次导出需要等多久。
+ *
+ * 按 plan 的总时长 × 帧率得到帧数，乘单帧预算后夹在区间内。这样短片的失败能很快暴露，
+ * 而全长 1080p / 60fps 也不会在编码完成前就被判超时。
+ */
+export declare function estimateExportBudget(page: Page): Promise<number>;
+/** 触发导出并等待下载事件；`timeoutMs` 通常由 {@link estimateExportBudget} 给出。 */
+export declare function triggerExport(page: Page, format: OutputFormat, timeoutMs?: number): Promise<Download>;
 /**
  * 驱动 JIZURA 生成文字 PV，并把产物保存到本地。
  *

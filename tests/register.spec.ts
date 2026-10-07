@@ -79,9 +79,11 @@ describe('dsh-tool-jizura 注册契约', () => {
     expect(definition['description']).toContain('网络访问');
   });
 
+  // 全长 1080p / 60fps（一首 3 分半的歌约 13000 帧）在无头软件编码下要几十分钟，
+  // 所以这个上限必须明显大于「短视频」量级，否则工具会在下载事件之前就被判超时。
   it('timeoutMs 覆盖浏览器启动 + 音频分析 + 视频编码', () => {
     plugin.apply(makeContext());
-    expect(registeredDefinition()['timeoutMs']).toBe(300000);
+    expect(registeredDefinition()['timeoutMs']).toBe(21600000);
   });
 
   it('parameters 声明的属性完整', () => {
@@ -95,15 +97,19 @@ describe('dsh-tool-jizura 注册契约', () => {
         'audioPath',
         'autoDynamics',
         'fps',
+        'hideNo',
+        'hideTime',
         'intensity',
         'keyBg',
         'lyrics',
         'mood',
         'outputDir',
         'outputFormat',
+        'paletteLock',
         'quality',
         'resolution',
         'seed',
+        'styleKey',
         'stylePreset',
         'theme',
         'title',
@@ -159,6 +165,10 @@ describe('dsh-tool-jizura 注册契约', () => {
     });
     expect(parameters['keyBg']).toMatchObject({ type: 'string', enum: ['off', 'green', 'black'], default: 'off' });
     expect(parameters['autoDynamics']).toMatchObject({ type: 'boolean', default: true });
+    expect(parameters['paletteLock']).toMatchObject({ type: 'boolean', default: false });
+    expect(parameters['hideNo']).toMatchObject({ type: 'boolean', default: false });
+    expect(parameters['hideTime']).toMatchObject({ type: 'boolean', default: false });
+    expect(parameters['styleKey']).toMatchObject({ type: 'string' });
     expect(parameters['intensity']).toMatchObject({ type: 'number' });
     expect(parameters['seed']).toMatchObject({ type: 'integer' });
   });

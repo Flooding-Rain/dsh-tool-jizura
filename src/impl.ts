@@ -70,6 +70,27 @@ export interface JizuraPvRequest {
   readonly intensity?: number | undefined;
   /** 是否用音频能量包络自动做段落对比（高能量行切得更碎）。 */
   readonly autoDynamics: boolean;
+  /**
+   * 是否锁定样式的**首套配色**。
+   *
+   * JIZURA 的每个样式含 2~4 套配色，画面默认会在行与行之间换色（由 `fx.bgSwitch` 控制概率）。
+   * 打开后把 `fx.bgSwitch` 压到 0，整片维持同一色调，适合需要统一意境的抒情作品。
+   *
+   * 实测 `bgSwitch = 0` 与「截断 `J.STYLES[style].schemes`」得到的 scheme 分布完全一致
+   * （90 个 cut 全部落在第 0 套），但前者是非破坏性的 —— 截断会永久改写页面内的全局样式表，
+   * 一旦复用 page（批量出片）就会污染后续调用。
+   */
+  readonly paletteLock?: boolean | undefined;
+  /**
+   * 直接指定 JIZURA 的样式 key（如 `specimen` / `sakura` / `sumi`），优先于 `stylePreset`。
+   *
+   * `stylePreset` 只覆盖 3 个常用样式，而 JIZURA 内置 27 个。key 无效时忽略并沿用预设。
+   */
+  readonly styleKey?: string | undefined;
+  /** 是否隐藏画面上的装饰编号（`No.08` 之类）。 */
+  readonly hideNo: boolean;
+  /** 是否隐藏画面上的装饰时间码（`LINE 08 · 00:36.52` 之类）。 */
+  readonly hideTime: boolean;
   /** 输出画幅比例。 */
   readonly aspectRatio: AspectRatio;
   /** 输出分辨率。 */
@@ -205,20 +226,38 @@ const AUDIO_ANALYSIS_TIMEOUT_MS = 90_000;
 /** 等待新手引导浮层出现的超时；它若不出现，说明这次不是首次访问。 */
 const TOUR_WAIT_MS = 4_000;
 
-/** 等待导出下载开始的超时（JIZURA 在浏览器内逐帧编码，耗时较长）。 */
-const DOWNLOAD_TIMEOUT_MS = 300_000;
+/**
+ * 等待导出下载开始的超时预算。
+ *
+ * JIZURA 在浏览器内逐帧绘制 + WebCodecs 编码，下载事件只在最后一个字节编码完后才触发。
+ * 固定值两头都不讨好：5 分钟盖不住全长 1080p（一首 3 分半的歌在 60fps 下约 13000 帧，
+ * 无头软件编码要几十分钟），而固定 6 小时会让短片的失败也等 6 小时才暴露。
+ *
+ * 因此按 plan 的帧数估算 `帧数 × EXPORT_MS_PER_FRAME`，再夹在下面的区间内。
+ * 单帧预算取自实测（720p / 24fps、无头软件编码约 63~86 ms/帧），取 400 ms 留足余量。
+ */
+const EXPORT_MS_PER_FRAME = 400;
+/** 下限：短视频与改动前的 5 分钟行为一致。 */
+const MIN_EXPORT_BUDGET_MS = 300_000;
+/** 上限：全长 1080p / 60fps 的兜底（工具层 timeoutMs 取同值）。 */
+const MAX_EXPORT_BUDGET_MS = 21_600_000;
 
 /**
- * 低能量行的切分数上限与高能量行的切分数。
+ * 段落对比的缩放系数。
  *
- * 用 `overrides[line].cuts` 做段落对比：这是 `08_planner.js` 里**真正生效**的按行控制
- * （`const fixedN = ov.cuts > 0 ? …`）。注意 `cutQuiet` 虽然看起来更合适，但它在
- * planner 与渲染里都没有被读取，是 UI-only 的死数据，用它不会有任何效果。
+ * 以 planner **自动算出的**行内 cut 数为基准：低于 Q1 的行 ×0.5（收敛），
+ * 高于 Q3 的行 ×1.5 且至少 +1（切得更碎），中间档保持自动值。
+ *
+ * 之所以按基准缩放而不是写死刀数：planner 依 `fx.density` 与行时长算出的切分常在 4~6 刀，
+ * 写死 `cuts = 3` 会把激烈的段落反而**改慢**，与「高能量切得更碎」的说法相反。
+ *
+ * 用 `overrides[line].cuts` 做段落对比，是因为它是 `08_planner.js` 里**真正生效**的按行控制
+ * （`const fixedN = ov.cuts > 0 ? …`）。`cutQuiet` 看着更合适，但 planner 与渲染都不读它。
  */
-const DYNAMICS_QUIET_CUTS = 1;
-const DYNAMICS_LOUD_CUTS = 3;
-/** 低于「中位数 × 该系数」的行算安静行。 */
-const DYNAMICS_QUIET_RATIO = 0.7;
+const DYNAMICS_QUIET_FACTOR = 0.5;
+const DYNAMICS_LOUD_FACTOR = 1.5;
+/** 单行切分数的上限，避免长行被拆得过碎。 */
+const DYNAMICS_MAX_CUTS = 8;
 
 /** 使用已解析的绝对输出目录。 */
 export function resolveOutputDir(outputDir?: string | undefined): string {
@@ -434,6 +473,14 @@ interface ConfigureOptions {
   readonly mood: Mood | null;
   readonly intensity: number | null;
   readonly seed: number | null;
+  /** 是否把 `fx.bgSwitch` 压到 0 以锁定首套配色。 */
+  readonly paletteLock: boolean;
+  /** 直接指定的样式 key；无效时忽略并沿用预设。 */
+  readonly styleKey: string | null;
+  /** 是否隐藏装饰编号。 */
+  readonly hideNo: boolean;
+  /** 是否隐藏装饰时间码。 */
+  readonly hideTime: boolean;
 }
 
 /** 配置注入后从页面读回的实际生效值。 */
@@ -459,6 +506,7 @@ export async function configureProject(page: Page, options: ConfigureOptions): P
         ui: { project: Record<string, unknown> };
         uiApi?: { replan?: () => void; syncUI?: () => void };
         MOODS: Record<string, MoodSpec>;
+        STYLES?: Record<string, unknown>;
         rng?: (seed: number) => () => number;
         omakase?: (project: unknown, rnd: () => number, themeId: string | null) => Record<string, unknown>;
       };
@@ -486,6 +534,11 @@ export async function configureProject(page: Page, options: ConfigureOptions): P
     // ---- 显式参数覆盖 ----
     if (cfg.style) P['style'] = cfg.style;
     if (cfg.mood) P['mood'] = cfg.mood;
+    // styleKey 直传：JIZURA 内置 27 个样式，而 stylePreset 只展开 3 个。
+    // key 无效时保持预设结果、不抛错 —— 调用方可以从返回值的 style 看到实际生效值。
+    if (cfg.styleKey && J.STYLES && Object.prototype.hasOwnProperty.call(J.STYLES, cfg.styleKey)) {
+      P['style'] = cfg.styleKey;
+    }
 
     // ---- 强度：在该情绪的 fx 区间内插值 ----
     if (cfg.intensity != null) {
@@ -501,6 +554,18 @@ export async function configureProject(page: Page, options: ConfigureOptions): P
       }
     }
 
+    // ---- 配色锁定与装饰开关 ----
+    // 两件都要放在 intensity 插值之后，否则会被情绪区间算出来的值盖掉。
+    // planner 只有在 `fx.bgSwitch > 0` 时才可能换色（`rng.chance(fx.bgSwitch * …)`），
+    // 压到 0 即整片维持该样式的第一套配色。实测与「截断 schemes」的 scheme 分布一致
+    // （90 个 cut 全部落在第 0 套），但不像截断那样永久改写页面内的全局样式表。
+    const fxPatch = P['fx'] as Record<string, unknown> | undefined;
+    if (fxPatch) {
+      if (cfg.paletteLock) fxPatch['bgSwitch'] = 0;
+      if (cfg.hideNo) fxPatch['hideNo'] = true;
+      if (cfg.hideTime) fxPatch['hideTime'] = true;
+    }
+
     if (J.uiApi && typeof J.uiApi.replan === 'function') J.uiApi.replan();
     if (J.uiApi && typeof J.uiApi.syncUI === 'function') J.uiApi.syncUI();
 
@@ -511,46 +576,52 @@ export async function configureProject(page: Page, options: ConfigureOptions): P
     };
   }, options);
 }
-
 /** 段落对比的结果。 */
 interface DynamicsResult {
   /** 参与判定的行数。 */
   readonly lines: number;
-  /** 被判为「响」的行数。 */
+  /** 被判为「响」的行数（切得更碎）。 */
   readonly loud: number;
-  /** 被判为「轻」的行数。 */
+  /** 被判为「轻」的行数（收敛）。 */
   readonly quiet: number;
+  /** 保持 planner 自动切分的行数。 */
+  readonly mid: number;
 }
 
 /**
  * 用音频能量包络自动做段落对比。
  *
- * 算出每行的平均能量，以中位数为界：明显偏轻的行收敛为单一切分
- * （`overrides[line].cuts = 1`，视觉更静），其余行切成更多刀
- * （`cuts = 3`，节奏更碎）。`cuts` 是 `08_planner.js` 里真正被读取的按行控制。
+ * 先算每行平均能量与其四分位，再以 **planner 自己算出的 cut 数**为基准缩放：
+ * 高能量行 ×1.5（至少 +1，切得更碎），低能量行 ×0.5（收敛），中间档保持自动值。
+ * 频谱没有起伏（Q1 == Q3）时整体跳过。
  *
- * `overrides[line].cutQuiet` 看着更适合做这件事，但它在 planner 与渲染里都没有
- * 被读取，是 UI-only 的死数据，用了不会有任何效果。
+ * `overrides[line].cutQuiet` 看着更适合做这件事，但它在 planner 与渲染里都没有被读取，
+ * 是 UI-only 的死数据，用了不会有任何效果。
  */
-export async function applyDynamics(page: Page, quietRatio: number = DYNAMICS_QUIET_RATIO): Promise<DynamicsResult> {
+export async function applyDynamics(page: Page): Promise<DynamicsResult> {
   return page.evaluate(
     (cfg) => {
       const J = (globalThis as unknown as {
         J: {
           ui: {
             audio: { energy: ArrayLike<number>; energyRate: number } | null;
-            plan: { cuts: { line: number }[]; lines: { index: number; start: number; end: number }[] };
+            plan: {
+              cuts: { line: number }[];
+              lines: { index: number; start: number; end: number }[];
+            };
             project: { overrides: Record<string, Record<string, unknown>> };
           };
           uiApi?: { replan?: () => void; syncUI?: () => void };
         };
       }).J;
       const S = J.ui;
-      const empty = { lines: 0, loud: 0, quiet: 0 };
+      const empty = { lines: 0, loud: 0, quiet: 0, mid: 0 };
       if (!S.audio || !S.audio.energy || !S.plan || !S.plan.lines.length) return empty;
 
       const rate = S.audio.energyRate || 50;
       const energy = S.audio.energy;
+
+      // 1) 每行的平均能量
       const energies = S.plan.lines.map((line) => {
         let sum = 0;
         let n = 0;
@@ -564,39 +635,91 @@ export async function applyDynamics(page: Page, quietRatio: number = DYNAMICS_QU
         return n ? sum / n : 0;
       });
 
+      // 2) 四分位 —— 比「中位数 × 系数」更能反映动态范围
       const sorted = energies.slice().sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
-      if (!(median > 0)) return empty;
+      const quantile = (p: number): number =>
+        sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
+      const q1 = quantile(0.25);
+      const q3 = quantile(0.75);
+      if (!(q3 > q1)) return empty; // 能量没有起伏，不值得分档
 
-      // 每行有几刀可用：行内非 special 布局的 cut 数上限
+      // 3) planner 自动算出的每行 cut 数 —— 缩放基准
+      const baseline = new Map<number, number>();
+      for (const cut of S.plan.cuts) {
+        if (cut.line < 0) continue;
+        baseline.set(cut.line, (baseline.get(cut.line) ?? 0) + 1);
+      }
+
       const overrides = S.project.overrides;
       let loud = 0;
       let quiet = 0;
+      let mid = 0;
 
       S.plan.lines.forEach((line, i) => {
         const value = energies[i] ?? 0;
+        const base = baseline.get(line.index) ?? 1;
         const cur = Object.assign({}, overrides[line.index] ?? {});
-        if (value < median * cfg.quietRatio) {
-          cur['cuts'] = cfg.quietCuts;
+
+        if (value > q3) {
+          cur['cuts'] = Math.min(cfg.maxCuts, Math.max(base + 1, Math.round(base * cfg.loudFactor)));
+          loud += 1;
+        } else if (value < q1) {
+          cur['cuts'] = Math.max(1, Math.round(base * cfg.quietFactor));
           quiet += 1;
         } else {
-          cur['cuts'] = cfg.loudCuts;
-          loud += 1;
+          delete cur['cuts']; // 中间档保留 planner 的自动值
+          mid += 1;
         }
-        overrides[line.index] = cur;
+
+        if (Object.keys(cur).length > 0) overrides[line.index] = cur;
+        else delete overrides[line.index];
       });
 
       if (J.uiApi && typeof J.uiApi.replan === 'function') J.uiApi.replan();
       if (J.uiApi && typeof J.uiApi.syncUI === 'function') J.uiApi.syncUI();
 
-      return { lines: S.plan.lines.length, loud, quiet };
+      return { lines: S.plan.lines.length, loud, quiet, mid };
     },
-    { quietRatio, quietCuts: DYNAMICS_QUIET_CUTS, loudCuts: DYNAMICS_LOUD_CUTS },
+    { quietFactor: DYNAMICS_QUIET_FACTOR, loudFactor: DYNAMICS_LOUD_FACTOR, maxCuts: DYNAMICS_MAX_CUTS },
   );
 }
 
-/** 触发导出并等待下载事件。 */
-export async function triggerExport(page: Page, format: OutputFormat): Promise<Download> {
+/**
+ * 估算这次导出需要等多久。
+ *
+ * 按 plan 的总时长 × 帧率得到帧数，乘单帧预算后夹在区间内。这样短片的失败能很快暴露，
+ * 而全长 1080p / 60fps 也不会在编码完成前就被判超时。
+ */
+export async function estimateExportBudget(page: Page): Promise<number> {
+  const info = await page.evaluate(() => {
+    const S = (globalThis as unknown as {
+      J: {
+        ui: {
+          plan?: { cuts?: { start?: number; dur?: number }[] };
+          project?: { fps?: number };
+        };
+      };
+    }).J.ui;
+
+    let seconds = 0;
+    for (const cut of S.plan?.cuts ?? []) {
+      const end = (cut.start ?? 0) + (cut.dur ?? 0);
+      if (end > seconds) seconds = end;
+    }
+    return { seconds, fps: S.project?.fps ?? 24 };
+  });
+
+  const frames = Math.max(1, Math.ceil(info.seconds * info.fps));
+  const budget = frames * EXPORT_MS_PER_FRAME;
+  return Math.min(MAX_EXPORT_BUDGET_MS, Math.max(MIN_EXPORT_BUDGET_MS, Math.round(budget)));
+}
+
+/** 触发导出并等待下载事件；`timeoutMs` 通常由 {@link estimateExportBudget} 给出。 */
+export async function triggerExport(
+  page: Page,
+  format: OutputFormat,
+  timeoutMs: number = MAX_EXPORT_BUDGET_MS,
+): Promise<Download> {
   const candidates = format === 'mp4' ? SELECTORS.exportMp4 : SELECTORS.exportPng;
 
   // かんたん模式下导出按钮直接在面板里；否则先切到「書き出し」标签页。
@@ -613,7 +736,7 @@ export async function triggerExport(page: Page, format: OutputFormat): Promise<D
   }
 
   const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: DOWNLOAD_TIMEOUT_MS }),
+    page.waitForEvent('download', { timeout: timeoutMs }),
     target.locator.click({ timeout: ACTION_TIMEOUT_MS }),
   ]);
   return download;
@@ -697,6 +820,10 @@ export async function generateJizuraPv(request: JizuraPvRequest): Promise<Jizura
       mood: request.mood ?? preset?.mood ?? null,
       intensity: request.intensity ?? preset?.intensity ?? null,
       seed: request.seed ?? null,
+      paletteLock: request.paletteLock ?? false,
+      styleKey: request.styleKey ?? null,
+      hideNo: request.hideNo,
+      hideTime: request.hideTime,
     });
     signal?.throwIfAborted();
 
@@ -709,7 +836,9 @@ export async function generateJizuraPv(request: JizuraPvRequest): Promise<Jizura
     }
 
     // ---- 导出 ----
-    const download = await triggerExport(page, request.outputFormat);
+    // ---- 导出（等待预算按 plan 帧数估算）----
+    const exportBudgetMs = await estimateExportBudget(page);
+    const download = await triggerExport(page, request.outputFormat, exportBudgetMs);
     signal?.throwIfAborted();
 
     const dir = resolveOutputDir(request.outputDir);
